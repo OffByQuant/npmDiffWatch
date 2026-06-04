@@ -31,7 +31,8 @@ def validate_verdict(parsed, schema):
     truncation/garbage falls back to the conservative heuristic alert rather than
     silently passing as benign."""
     if not isinstance(parsed, dict):
-        raise ReviewUnavailable("verdict is not an object")
+        raise ReviewUnavailable(f"verdict is not a JSON object (got {type(parsed).__name__}): the model "
+                                f"returned malformed output; lower structured_output or use a stronger model.")
     out = dict(parsed)
     for key, spec in schema.get("properties", {}).items():
         has_default = "default" in spec
@@ -39,14 +40,44 @@ def validate_verdict(parsed, schema):
             if has_default:
                 out[key] = spec["default"]
             elif key in schema.get("required", []):
-                raise ReviewUnavailable(f"missing required key: {key}")
+                raise ReviewUnavailable(f"verdict missing required key {key!r}: the model returned an "
+                                        f"incomplete verdict, often truncated by a reasoning model. Raise "
+                                        f"reviewer.max_output_tokens, or disable thinking via "
+                                        f"[reviewer.extra_body].")
             continue
         if "enum" in spec and out[key] not in spec["enum"]:
             if has_default:
                 out[key] = spec["default"]
             else:
-                raise ReviewUnavailable(f"{key}={out[key]!r} not in {spec['enum']}")
+                raise ReviewUnavailable(f"verdict {key}={out[key]!r} is not one of {spec['enum']}: the model "
+                                        f"returned an out-of-contract value. Lower structured_output "
+                                        f"(json_schema -> json_object -> none) or use a more capable model.")
     return out
+
+
+def _egress_hint(e) -> str:
+    """Turn a transport failure into a ReviewUnavailable message that points at the likely fix, so the
+    operator isn't left with a bare 'HTTP Error 400'. `urllib`'s HTTPError carries a numeric `.code`."""
+    base = str(e) or type(e).__name__
+    code = getattr(e, "code", None)
+    if code == 400:
+        return (f"reviewer endpoint returned HTTP 400 ({base}): the request was rejected — many endpoints "
+                f"(e.g. DeepSeek) reject the strict json_schema response_format. Set "
+                f'structured_output = "json_object" in [reviewer] (see examples/deepseek.toml).')
+    if code in (401, 403):
+        return (f"reviewer endpoint returned HTTP {code} ({base}): auth failed or the client was blocked. "
+                f"Check api_key_env names an env var that is set in this process and the key is valid.")
+    if code == 404:
+        return (f"reviewer endpoint returned HTTP 404 ({base}): check base_url (it usually ends in /v1) and "
+                f"that the model name exists on this endpoint.")
+    if code == 429:
+        return f"reviewer endpoint returned HTTP 429 ({base}): rate-limited. Back off or raise reviewer.timeout."
+    if code is not None:
+        return f"reviewer endpoint returned HTTP {code} ({base})."
+    if isinstance(e, OSError):    # URLError / connection refused / timeout (HTTPError has a code, above)
+        return (f"could not reach reviewer endpoint ({base}): check base_url host/port and the trailing /v1, "
+                f"and that the model server is running.")
+    return base
 
 
 class OpenAICompatibleBackend:
@@ -86,8 +117,8 @@ class OpenAICompatibleBackend:
             payload.update(self.extra_body)
         try:
             data = self._post(f"{self.endpoint}/chat/completions", payload, self._timeout, self._auth_headers())
-        except Exception as e:
-            raise ReviewUnavailable(str(e)) from e
+        except Exception as e:                    # connection/timeout/HTTP -> fallback (with a fix hint)
+            raise ReviewUnavailable(_egress_hint(e)) from e
         try:
             content = data["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError) as e:

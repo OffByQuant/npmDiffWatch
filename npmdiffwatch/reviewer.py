@@ -200,10 +200,16 @@ class Reviewer:
         text = self.backend.complete(model=model, system=SYSTEM_PROMPT, user_text=user_text,
                                      schema=REVIEW_SCHEMA, max_tokens=self.cfg.reviewer.max_output_tokens)
         d = json.loads(text)
+        # recommended_action is informational (a human adjudicates downstream), so validate_verdict
+        # already coerced any out-of-enum value to "monitor". But "monitor" on confirmed malware reads
+        # wrong in an alert: fail toward caution and always surface report-to-npm for a malicious verdict.
+        action = d["recommended_action"]
+        if d["classification"] == "malicious" and action != "report-to-npm":
+            action = "report-to-npm"
         return Verdict(
             package=diff.package, version=diff.version,
             classification=d["classification"], score=triage.score,
             fired_rules=triage.fired_rules, urgent=bool(d["urgent"]),
             confidence=_clamp01(d["confidence"]), attack_type=d["attack_type"],
             reasoning=d["reasoning"], cited_hunk=d["cited_hunk"],
-            recommended_action=d["recommended_action"], model=model)
+            recommended_action=action, model=model)

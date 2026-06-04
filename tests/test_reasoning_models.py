@@ -45,6 +45,20 @@ def test_out_of_enum_classification_hard_fails():
         validate_verdict({"classification": "totally-bogus"}, REVIEW_SCHEMA)
 
 
+# --- hard-fail messages name the likely fix ----------------------------------
+
+def test_missing_classification_message_hints_truncation_fix():
+    # The usual cause of a missing required field is a reasoning model truncating
+    # the JSON; the message must point the operator at the budget knob.
+    with pytest.raises(ReviewUnavailable, match="max_output_tokens"):
+        validate_verdict({"confidence": 0.9}, REVIEW_SCHEMA)
+
+
+def test_out_of_enum_classification_message_hints_structured_output():
+    with pytest.raises(ReviewUnavailable, match="structured_output"):
+        validate_verdict({"classification": "totally-bogus"}, REVIEW_SCHEMA)
+
+
 # --- complete() returns corrected JSON + honors extra_body -------------------
 
 def _backend(content, **kw):
