@@ -2,4 +2,4 @@
 provider = "openai"
 base_url = "http://localhost:11434/v1"
 model = "qwen2.5:7b"
-structured_output = "json_schema"
+structured_output = "json_object"    # Ollama json_schema support varies by model; loose JSON is safe

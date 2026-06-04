@@ -21,7 +21,7 @@ base_url = "https://api.deepseek.com/v1"
 model = "deepseek-chat"
 api_key_env = "DEEPSEEK_API_KEY"
 structured_output = "json_object"
-max_output_tokens = 8192
+max_output_tokens = 32000   # reasoning eats the budget; leave room for thinking + the verdict
 
 # Optional: provider-specific knobs merged verbatim into the request payload.
 # [reviewer.extra_body]

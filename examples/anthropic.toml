@@ -1,5 +1,5 @@
 [reviewer]
 provider = "anthropic"
-model = "claude-sonnet-4-20250514"
-escalation_model = "claude-opus-4-20250514"
+model = "claude-sonnet-4-6"
+escalation_model = "claude-opus-4-8"
 structured_output = "json_schema"
