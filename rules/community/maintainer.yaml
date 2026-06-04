@@ -1,0 +1,28 @@
+# Ownership change vs the prior release we stored — an account-takeover signal.
+- id: maintainer-set-change
+  description: The current maintainer set differs from the prior release's stored maintainers.
+  applies_to: maintainer
+  weight: 20
+  attack_type: account-takeover
+  match: {maintainer_changed: true}
+
+# Per-version publisher change from the packument's _npmUser. Fires on first
+# sight (no stored history needed): this version was pushed by a different npm
+# account than its predecessor — a strong account-takeover / hijack signal.
+- id: publisher-change
+  description: This version was published by a different npm account than the prior version.
+  applies_to: maintainer
+  weight: 25
+  attack_type: account-takeover
+  match: {publisher_changed: true}
+
+# Amplifier: the new publisher maintains <= publisher_footprint_max packages.
+# npm exposes no account-creation date, so footprint proxies a fresh/throwaway
+# account. Only set when the publisher changed, so it stacks with publisher-change
+# (25 + 25) to push a fresh-account takeover over threshold_t on its own.
+- id: low-footprint-publisher
+  description: This version's new publisher maintains very few packages — a fresh/throwaway account.
+  applies_to: maintainer
+  weight: 25
+  attack_type: account-takeover
+  match: {low_footprint_publisher: true}

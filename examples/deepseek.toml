@@ -1,0 +1,28 @@
+# DeepSeek (and other reasoning/"thinking" models behind an OpenAI-compatible API).
+#
+# Two things differ from a vanilla OpenAI endpoint:
+#
+# 1. structured_output = "json_object", NOT "json_schema". DeepSeek supports
+#    OpenAI's json_object response_format but not the strict json_schema variant,
+#    so json_schema would 400. The reviewer still validates the result against
+#    REVIEW_SCHEMA locally and repairs/defaults any truncated fields.
+#
+# 2. Reasoning models spend output-token budget on internal thinking, which can
+#    truncate the JSON verdict. The reviewer keeps `classification` (the field
+#    that drives alerting) and defaults the rest, so a truncated verdict still
+#    alerts correctly. To reclaim budget you can ALSO disable thinking via the
+#    provider's own request field using [reviewer.extra_body] below (the exact
+#    key is provider-specific — DeepSeek/opencode use `reasoning`; check yours).
+#    Or just raise max_output_tokens so reasoning + JSON both fit.
+
+[reviewer]
+provider = "openai"
+base_url = "https://api.deepseek.com/v1"
+model = "deepseek-chat"
+api_key_env = "DEEPSEEK_API_KEY"
+structured_output = "json_object"
+max_output_tokens = 8192
+
+# Optional: provider-specific knobs merged verbatim into the request payload.
+# [reviewer.extra_body]
+# reasoning = { enabled = false }

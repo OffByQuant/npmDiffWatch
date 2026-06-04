@@ -1,0 +1,34 @@
+[project]
+name = "npmdiffwatch"
+version = "0.1.0"
+description = "Rules-driven npm supply-chain malware scanner"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Appy" }]
+dependencies = ["PyYAML>=6.0", "tree-sitter>=0.22", "tree-sitter-javascript>=0.21"]
+
+[project.optional-dependencies]
+# AnthropicBackend uses adaptive `thinking` and `output_config` json_schema,
+# which predate 0.40; floor set to the verified-working SDK version.
+claude = ["anthropic>=0.88.0"]
+dev = ["pytest>=8"]
+
+[project.scripts]
+npmdiffwatch = "npmdiffwatch.__main__:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+
+[tool.ruff.lint]
+ignore = ["E702", "E401"]
+
+[tool.setuptools.packages.find]
+include = ["npmdiffwatch*"]
+
+[tool.setuptools.package-data]
+npmdiffwatch = ["data/*.txt"]

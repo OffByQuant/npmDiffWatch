@@ -1,0 +1,38 @@
+# npm package.json field-level change rules
+- id: pkg-install-scripts
+  description: Added/modified scripts.preinstall/install/postinstall — lifecycle hook.
+  applies_to: package_json
+  weight: 40
+  attack_type: install-hook-script
+  match:
+    any:
+      - pkg_script_added: "preinstall"
+      - pkg_script_added: "install"
+      - pkg_script_added: "postinstall"
+
+- id: pkg-bin-rewrite
+  description: Modified bin field to an unexpected path.
+  applies_to: package_json
+  weight: 30
+  attack_type: bin-rewrite
+  match:
+    any:
+      - pkg_field_changed: "bin"
+
+- id: pkg-main-rewrite
+  description: Modified main field to a suspicious file.
+  applies_to: package_json
+  weight: 25
+  attack_type: main-rewrite
+  match:
+    any:
+      - pkg_field_changed: "main"
+
+- id: pkg-new-dependency
+  description: Changed dependencies field (volume signal — new dep added).
+  applies_to: package_json
+  weight: 10
+  attack_type: dependency-added
+  match:
+    any:
+      - pkg_field_changed: "dependencies"

@@ -1,0 +1,14 @@
+# npm lockfile change rules
+- id: lock-integrity-change
+  description: Changed integrity hash without version change — possible dependency hijack.
+  applies_to: lockfile
+  weight: 35
+  attack_type: integrity-hijack
+  match: {lock_integrity_change: true}
+
+- id: lock-new-package
+  description: New package entry added to the lockfile.
+  applies_to: lockfile
+  weight: 10
+  attack_type: lockfile-new-dep
+  match: {lock_new_package: true}

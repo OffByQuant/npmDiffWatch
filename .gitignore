@@ -1,0 +1,26 @@
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+*.sqlite
+*.sqlite3
+*.db
+.diffwatch/
+quarantine/
+artifact_cache/
+.env
+*.local
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.DS_Store
+
+# stale nested copy + a stray redirect artifact (not part of the project)
+Node/
+/2

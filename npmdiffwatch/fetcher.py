@@ -1,0 +1,319 @@
+import gzip
+import hashlib
+import io
+import json
+import os
+import posixpath
+import tarfile
+import urllib.error
+import urllib.request
+from datetime import datetime, timezone
+
+from .config import Config
+from .models import NewRelease, ArtifactSet
+from . import quarantine, deps, egress
+
+
+class RefusedToExtract(Exception): ...
+class RefusedToFetch(Exception): ...
+
+
+class _BoundedReader:
+    def __init__(self, raw, limit: int):
+        self._raw = raw; self._limit = limit; self._n = 0
+    def read(self, size=-1):
+        chunk = self._raw.read(size)
+        self._n += len(chunk)
+        if self._n > self._limit:
+            raise RefusedToExtract("decompressed-size")
+        return chunk
+
+
+_SRC_EXT = {".js", ".mjs", ".cjs", ".jsx", ".ts", ".mts", ".cts", ".tsx"}
+_JSON_NAMES = {"package.json", "package-lock.json", "npm-shrinkwrap.json"}
+_BIN_EXT = {".node", ".wasm"}
+_FOREIGN_EXT = {".php", ".phtml", ".rb", ".pl", ".pm", ".go", ".java", ".class", ".jar",
+                ".exe", ".dll", ".dylib", ".so", ".ps1", ".bat", ".cmd"}
+
+
+def _is_source(name): return any(name.endswith(e) for e in _SRC_EXT) or name in _JSON_NAMES
+def _is_strict_binary(name): return any(name.endswith(e) for e in _BIN_EXT)
+def _foreign_ext(name):
+    low = name.lower()
+    return next((e for e in _FOREIGN_EXT if low.endswith(e)), None)
+def _strip_top(name): return name.split("/", 1)[1] if "/" in name else name
+def _unsafe(name): return name.startswith("/") or ".." in name.split("/")
+
+
+def extract_tgz(blob: bytes, cfg: Config):
+    files: dict[str, bytes] = {}
+    binaries: list[dict] = []
+    has_lockfile = False
+    has_shrinkwrap = False
+    total = 0
+    count = 0
+    foreign = 0
+
+    stream = _BoundedReader(gzip.GzipFile(fileobj=io.BytesIO(blob)), cfg.max_decompressed_bytes)
+    try:
+        tar = tarfile.open(fileobj=stream, mode="r|")
+    except (tarfile.ReadError, OSError, EOFError) as e:
+        raise RefusedToExtract(f"bad-archive: {e}") from e
+
+    with tar:
+        for m in tar:
+            count += 1
+            if count > cfg.max_members:
+                raise RefusedToExtract("members")
+            if len(m.name) > cfg.max_name_bytes:
+                raise RefusedToExtract("member-name")
+            if not m.isfile():
+                continue
+            if _unsafe(m.name):
+                continue
+            if m.size > cfg.max_member_bytes:
+                raise RefusedToExtract("member-size")
+            total += m.size
+            if total > cfg.max_total_bytes:
+                raise RefusedToExtract("total-size")
+            rel = _strip_top(m.name)
+
+            if rel == "package-lock.json":
+                has_lockfile = True
+            if rel == "npm-shrinkwrap.json":
+                has_shrinkwrap = True
+
+            if _is_source(m.name) and m.size <= cfg.max_source_file_bytes:
+                files[rel] = tar.extractfile(m).read(cfg.max_source_file_bytes + 1)
+            elif _is_source(m.name):
+                binaries.append({"path": rel, "size": m.size, "reason": "source-too-large"})
+            elif _is_strict_binary(m.name):
+                data = tar.extractfile(m).read()
+                binaries.append({"path": rel, "sha256": hashlib.sha256(data).hexdigest(),
+                                 "size": m.size})
+            elif (fext := _foreign_ext(m.name)) and foreign < cfg.max_foreign_files:
+                binaries.append({"path": rel, "size": m.size, "ext": fext,
+                                 "reason": "foreign-language-source"})
+                foreign += 1
+
+    return files, binaries, has_lockfile, has_shrinkwrap
+
+
+def _fetch_url(url: str, cfg: Config) -> bytes:
+    egress.assert_web_scheme(url)
+    req = urllib.request.Request(url, headers={"User-Agent": "npmdiffwatch/0.1"})
+    with urllib.request.urlopen(req, timeout=cfg.fetch_timeout_s) as r:
+        buf = bytearray()
+        while chunk := r.read(65536):
+            buf += chunk
+            if len(buf) > cfg.max_download_bytes:
+                raise RefusedToFetch("download-size")
+        return bytes(buf)
+
+
+def _fetch_json(url: str, cfg: Config) -> dict | None:
+    egress.assert_web_scheme(url)
+    req = urllib.request.Request(url, headers={"User-Agent": "npmdiffwatch/0.1"})
+    try:
+        with urllib.request.urlopen(req, timeout=cfg.fetch_timeout_s) as r:
+            return json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return None
+        return {}
+    except Exception:
+        return {}
+
+
+_SURFACE_NAMES = {"package.json", "index.js", "main.js", "cli.js",
+                  "preinstall.js", "install.js", "postinstall.js"}
+
+
+def _is_surface(path: str) -> bool:
+    base = posixpath.basename(path)
+    return base in _SURFACE_NAMES or "/bin/" in path
+
+
+def _packument(package: str, cfg: Config) -> dict | None:
+    url = f"{cfg.npm_registry.rstrip('/')}/{package}"
+    return _fetch_json(url, cfg)
+
+
+def _pick_predecessor(meta: dict, version: str):
+    versions = meta.get("versions", {})
+    tgt = versions.get(version)
+    if not tgt:
+        return None
+    tgt_time = None
+    time_map = meta.get("time", {})
+    for v, ts in time_map.items():
+        if v == version:
+            tgt_time = ts
+            break
+    best = None
+    for ver, vdata in versions.items():
+        if ver == version:
+            continue
+        if vdata.get("deprecated"):
+            continue
+        ts = time_map.get(ver)
+        if not ts or (tgt_time is not None and ts >= tgt_time):
+            continue
+        if best is None or ts > best[0]:
+            dist = vdata.get("dist", {})
+            best = (ts, ver, dist.get("tarball"))
+    return (best[1], best[2]) if best else None
+
+
+_DEP_FIELDS = ("dependencies", "devDependencies", "peerDependencies", "optionalDependencies")
+
+
+def _parse_deps(version_data: dict) -> set[str]:
+    result = set()
+    for field in _DEP_FIELDS:
+        deps_dict = version_data.get(field, {}) or {}
+        for name in deps_dict:
+            result.add(deps.normalize_name(name))
+    return result
+
+
+def _screen_added_deps(new_ver: dict, package: str, pred_ver: str | None,
+                       pred_ver_data: dict | None, cfg: Config) -> list[dict]:
+    new_deps = _parse_deps(new_ver)
+    if not new_deps:
+        return []
+    prior_deps: set[str] = set()
+    if pred_ver_data is not None:
+        prior_deps = _parse_deps(pred_ver_data)
+    added = new_deps - prior_deps
+    if not added:
+        return []
+
+    corpus_path = cfg.top_npm_path
+    if corpus_path is None:
+        corpus_path = os.path.join(os.path.dirname(__file__), "data", "top_npm_names.txt")
+    corpus = deps.load_corpus(str(corpus_path))
+
+    def _lookup(name):
+        url = f"{cfg.npm_registry.rstrip('/')}/{name}"
+        return _fetch_json(url, cfg)
+
+    return deps.screen_added_deps(added, corpus, fetch_json=_lookup,
+                                  now=datetime.now(timezone.utc),
+                                  brandnew_days=cfg.dep_brandnew_days,
+                                  cap=cfg.max_dep_lookups)
+
+
+def _publisher_of(version_data: dict | None) -> str | None:
+    return ((version_data or {}).get("_npmUser") or {}).get("name")
+
+
+def _publisher_changed(versions: dict, new_version: str, prior_version: str | None) -> bool:
+    """True when the new version was published by a different npm account than its
+    predecessor. Fails closed (False) if either publisher is unknown, so a missing
+    _npmUser never produces a false positive."""
+    if not prior_version:
+        return False
+    new_pub = _publisher_of(versions.get(new_version))
+    prior_pub = _publisher_of(versions.get(prior_version))
+    return bool(new_pub and prior_pub and new_pub != prior_pub)
+
+
+def _publisher_footprint(name: str, cfg: Config, fetch_json=_fetch_json) -> int | None:
+    """How many packages the npm account `name` maintains, via the registry
+    search API. None if the lookup fails or the registry doesn't support search
+    (e.g. a private mirror) — callers must fail closed on None."""
+    from urllib.parse import quote
+    url = f"{cfg.npm_registry.rstrip('/')}/-/v1/search?text=maintainer:{quote(name)}&size=1"
+    data = fetch_json(url, cfg)
+    if isinstance(data, dict) and isinstance(data.get("total"), int):
+        return data["total"]
+    return None
+
+
+def _low_footprint_publisher(version_data: dict | None, cfg: Config,
+                             fetch_json=_fetch_json) -> bool:
+    """True when the version's publisher maintains <= publisher_footprint_max
+    packages — npm exposes no account-creation date, so footprint proxies a
+    fresh/throwaway account. Fails closed if the publisher is unknown or the
+    footprint can't be resolved. Only meaningful when the publisher changed;
+    the caller gates the (networked) lookup on that."""
+    name = _publisher_of(version_data)
+    if not name:
+        return False
+    footprint = _publisher_footprint(name, cfg, fetch_json)
+    if footprint is None:
+        return False
+    return footprint <= cfg.publisher_footprint_max
+
+
+def _maintainer_metadata(meta: dict) -> dict:
+    maintainers = meta.get("maintainers", []) or []
+    time_map = meta.get("time", {})
+    return {
+        "author": None,
+        "maintainers": [m.get("name") for m in maintainers if m.get("name")],
+        "created": time_map.get("created"),
+    }
+
+
+def fetch_artifacts(cfg, rel: NewRelease) -> ArtifactSet | None:
+    if quarantine.is_quarantined(rel.package):
+        raise RefusedToFetch(f"quarantined: {rel.package}")
+
+    meta = _packument(rel.package, cfg)
+    if not meta or "versions" not in meta:
+        return None
+
+    versions = meta.get("versions", {})
+    new_ver_data = versions.get(rel.version)
+    if not new_ver_data:
+        return None
+
+    dist = new_ver_data.get("dist", {})
+    tarball_url = dist.get("tarball")
+    if not tarball_url:
+        return None
+
+    pred = _pick_predecessor(meta, rel.version)
+    is_new = pred is None
+    mtmeta = _maintainer_metadata(meta)
+    pub_changed = _publisher_changed(versions, rel.version, pred[0] if pred else None)
+    mtmeta["publisher_changed"] = pub_changed
+    # Footprint lookup is one extra request; only do it when the publisher changed.
+    mtmeta["low_footprint_publisher"] = bool(
+        pub_changed and _low_footprint_publisher(new_ver_data, cfg))
+    scripts = new_ver_data.get("scripts", {}) or {}
+
+    if is_new and cfg.new_package_policy == "skip":
+        return ArtifactSet(rel.package, rel.version, None, "tgz", {}, {}, {},
+                           is_new_package=True, maintainer_metadata=mtmeta,
+                           packument_json=json.dumps(meta), scripts_field=scripts,
+                           has_lockfile=False)
+
+    tgz_bytes = _fetch_url(tarball_url, cfg)
+    new_files, new_bins, has_lockfile, has_shrinkwrap = extract_tgz(tgz_bytes, cfg)
+
+    prior_files: dict[str, bytes] = {}
+    prior_ver = None
+    dep_findings: list[dict] = []
+
+    if is_new:
+        if cfg.new_package_policy == "surface":
+            new_files = {p: b for p, b in new_files.items() if _is_surface(p)}
+    else:
+        prior_ver, prior_url = pred
+        try:
+            prior_tgz = _fetch_url(prior_url, cfg)
+            prior_files, prior_bins, _, _ = extract_tgz(prior_tgz, cfg)
+        except Exception:
+            prior_files = {}
+        pred_ver_data = versions.get(prior_ver)
+        dep_findings = _screen_added_deps(new_ver_data, rel.package, prior_ver, pred_ver_data, cfg)
+
+    return ArtifactSet(rel.package, rel.version, prior_ver, "tgz",
+                       new_files, prior_files, {}, new_bins,
+                       is_new_package=is_new, maintainer_metadata=mtmeta,
+                       added_dep_findings=dep_findings,
+                       packument_json=json.dumps(meta), scripts_field=scripts,
+                       has_lockfile=has_lockfile, has_shrinkwrap=has_shrinkwrap)
