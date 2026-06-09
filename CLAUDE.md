@@ -22,6 +22,7 @@ npmdiffwatch/              # Core package
   engine.py                # Rules engine triage (facts x rules)
   reviewer.py              # LLM reviewer prompt builder + verdict parser
   orchestrator.py          # Pipeline coordinator (run_once, seed, adjudicate, etc.)
+  dashboard.py             # Static HTML verdict dashboard (npm links + report-malware actions)
   data/
     top_npm_names.txt      # Vendored top npm names for typosquat corpus
 rules/community/           # Shipped YAML detection rules
