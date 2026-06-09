@@ -249,8 +249,19 @@ npmdiffwatch -c npmdiffwatch.toml dashboard                 # writes .diffwatch/
 npmdiffwatch -c npmdiffwatch.toml dashboard --serve         # also serve it on http://127.0.0.1:8787
 ```
 
-`--serve` binds **127.0.0.1 only** (localhost; never exposed to the network) and blocks until Ctrl-C. Use
-`--out PATH` to choose the file and `--port N` to change the port.
+`--serve` binds **127.0.0.1 only** (localhost) by default and blocks until Ctrl-C. Use `--out PATH` to
+choose the file and `--port N` to change the port.
+
+To view the dashboard from another device on your LAN, bind all interfaces:
+
+```bash
+npmdiffwatch -c npmdiffwatch.toml dashboard --serve --host 0.0.0.0   # reachable at http://<this-host-ip>:8787
+```
+
+> **Exposing it widens your trust boundary.** The page serves your verdict data and renders strings derived
+> from untrusted npm packages. It's HTML-escaped against XSS and the server is read-only with no control
+> endpoints, but `--host 0.0.0.0` makes it reachable by anyone who can reach this host. Only do it on a
+> network you trust, and keep the default `127.0.0.1` otherwise. The same `--host` flag works on `watch`.
 
 **The `watch` daemon** is the built-in alternative to wiring up cron/systemd (§7): it scans on an interval,
 refreshes the dashboard after each tick, and — with `--serve` — serves it the whole time. One command gives

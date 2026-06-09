@@ -9,12 +9,20 @@ def _cfg(args):
     return load_config(args.config) if args.config else Config()
 
 
-def _file_server(directory, port):
-    """A read-only static file server bound to localhost only (no control endpoints)."""
+def _reach(host):
+    """Human note about who can reach a given bind address."""
+    if host in ("127.0.0.1", "localhost"):
+        return "localhost only"
+    return "exposed to the local network — anyone who can reach this host"
+
+
+def _file_server(directory, port, host="127.0.0.1"):
+    """A read-only static file server (no control endpoints). Binds 127.0.0.1 by
+    default; pass host="0.0.0.0" to expose it to the local network."""
     import functools
     from http.server import SimpleHTTPRequestHandler, HTTPServer
     handler = functools.partial(SimpleHTTPRequestHandler, directory=str(directory))
-    return HTTPServer(("127.0.0.1", port), handler)
+    return HTTPServer((host, port), handler)
 
 
 def main():
@@ -52,6 +60,9 @@ def main():
     dshp.add_argument("--serve", action="store_true",
                       help="serve the dashboard on 127.0.0.1 (localhost only) until Ctrl-C")
     dshp.add_argument("--port", type=int, default=8787, help="port for --serve (default: 8787)")
+    dshp.add_argument("--host", default="127.0.0.1",
+                      help="bind address for --serve (default: 127.0.0.1, localhost only; "
+                           "use 0.0.0.0 to expose it to the local network)")
     wp = sub.add_parser("watch",
                         help="daemon loop: scan for new releases on an interval, refresh the "
                              "dashboard each tick, and (with --serve) serve it on localhost")
@@ -61,6 +72,9 @@ def main():
     wp.add_argument("--serve", action="store_true",
                     help="also serve the dashboard on 127.0.0.1 (localhost only) while watching")
     wp.add_argument("--port", type=int, default=8787, help="port for --serve (default: 8787)")
+    wp.add_argument("--host", default="127.0.0.1",
+                    help="bind address for --serve (default: 127.0.0.1, localhost only; "
+                         "use 0.0.0.0 to expose it to the local network)")
     args = p.parse_args()
     cfg = _cfg(args)
     egress.install_guard(cfg)
@@ -107,9 +121,9 @@ def main():
         out = export_dashboard(cfg, out_path=args.out)
         print(f"[npmdiffwatch] dashboard written to {out}")
         if args.serve:
-            httpd = _file_server(out.parent, args.port)
-            print(f"[npmdiffwatch] serving on http://127.0.0.1:{args.port}/{out.name} "
-                  f"(localhost only) — Ctrl-C to stop")
+            httpd = _file_server(out.parent, args.port, args.host)
+            print(f"[npmdiffwatch] serving on http://{args.host}:{args.port}/{out.name} "
+                  f"({_reach(args.host)}) — Ctrl-C to stop")
             try:
                 httpd.serve_forever()
             except KeyboardInterrupt:
@@ -121,9 +135,9 @@ def main():
         httpd = None
         if args.serve:
             import threading
-            httpd = _file_server(out.parent, args.port)
+            httpd = _file_server(out.parent, args.port, args.host)
             threading.Thread(target=httpd.serve_forever, daemon=True).start()
-            print(f"[npmdiffwatch] serving http://127.0.0.1:{args.port}/{out.name} (localhost only)")
+            print(f"[npmdiffwatch] serving http://{args.host}:{args.port}/{out.name} ({_reach(args.host)})")
         print(f"[npmdiffwatch] watching — scanning every {args.interval}s, Ctrl-C to stop")
         n = watch(cfg, interval=args.interval, out_path=args.out)
         if httpd:
