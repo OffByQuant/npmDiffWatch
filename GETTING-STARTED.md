@@ -81,6 +81,34 @@ model = "qwen-singleshot"
 structured_output = "json_schema"    # recent GBNF-backed builds; drop to json_object on older ones
 ```
 
+**Local Gemma on Apple Silicon** (llama.cpp built with Metal — the setup behind the project's Mac demos) —
+`examples/local-gemma-mac.toml`:
+
+```toml
+[reviewer]
+provider = "openai"
+base_url = "http://127.0.0.1:8080/v1"
+model = "gemma-4-12b-it-UD-Q8_K_XL.gguf"   # use the exact name your llama-server exposes
+structured_output = "json_schema"
+max_output_tokens = 4096
+timeout = 120.0
+
+# Gemma is a reasoning model — disable thinking so the output budget goes to the structured
+# verdict instead of chain-of-thought (which otherwise eats the tokens and truncates the JSON).
+[reviewer.extra_body]
+chat_template_kwargs = { enable_thinking = false }
+```
+
+Serve the model first, then point NpmDiffWatch at it:
+
+```bash
+llama-server -m gemma-4-12b-it-UD-Q8_K_XL.gguf -ngl 999 --jinja -c 32768   # OpenAI-compatible API on :8080
+```
+
+The Q8 weights are ~13 GB (16 GB+ of unified memory runs it comfortably); it works on Apple Silicon via
+Metal — or CPU — with no discrete GPU. This is the local, no-API-cost path the project is built around;
+Gemma 4 12B (Apache 2.0) is purpose-built to run on a laptop. See the runtime numbers in the README.
+
 **OpenAI** — `examples/openai.toml`:
 
 ```toml
