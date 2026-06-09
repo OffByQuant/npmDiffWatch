@@ -91,6 +91,22 @@ pkg-e    3.13.0        167740   none              benign
 rack up a huge heuristic score yet be correctly cleared as benign on inspection — catching the false
 positive before it ever becomes an alert.
 
+## See and act on the results
+
+Finding a malicious release only matters if it gets reported and pulled. NpmDiffWatch turns the verdicts in
+your database into a **local dashboard** — a single web page of cards, the dangerous ones sorted to the top,
+each with a link straight to the package on npm and a one-click **"Report malware on npm"** button. The goal
+is to make the path from *"the tool flagged this"* to *"reported for takedown"* as short as possible, so more
+eyes lead to faster reporting and faster removal.
+
+```bash
+npmdiffwatch -c npmdiffwatch.toml watch --serve   # keep scanning + open a live dashboard
+# → http://127.0.0.1:8787/dashboard.html
+```
+
+The page stays on your machine (it's served to `localhost` only) and runs no code from the packages it
+shows. **→ [GETTING-STARTED.md](GETTING-STARTED.md#6-the-dashboard--the-watch-daemon)** for the details.
+
 ## Run it safely
 
 NpmDiffWatch ingests untrusted bytes from the npm registry and runs community-authored rules. The
