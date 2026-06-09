@@ -7,9 +7,12 @@ the heuristic-fallback path.
 """
 import json
 
-import anthropic
-import httpx
 import pytest
+
+# The Anthropic SDK is an optional extra ([claude]); skip this whole module cleanly
+# when it isn't installed instead of failing collection for contributors on `[dev]` only.
+anthropic = pytest.importorskip("anthropic")
+httpx = pytest.importorskip("httpx")
 
 from npmdiffwatch.backends import AnthropicBackend, ReviewUnavailable
 
