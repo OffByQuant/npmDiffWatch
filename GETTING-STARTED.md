@@ -10,12 +10,13 @@ rules, see the YAML files in [`rules/community/`](rules/community).
 3. [API keys](#3-api-keys)
 4. [Structured-output modes](#4-structured-output-modes)
 5. [The operating loop](#5-the-operating-loop)
-6. [Running on a harness](#6-running-on-a-harness-cron--systemd--docker--ci)
-7. [State, persistence & containment](#7-state-persistence--containment)
-8. [Alerts](#8-alerts)
-9. [Heuristic-only mode (no LLM)](#9-heuristic-only-mode-no-llm)
-10. [Troubleshooting](#10-troubleshooting)
-11. [Detection scope on brand-new packages](#11-detection-scope-on-brand-new-packages)
+6. [The dashboard & the `watch` daemon](#6-the-dashboard--the-watch-daemon)
+7. [Running on a harness](#7-running-on-a-harness-cron--systemd--docker--ci)
+8. [State, persistence & containment](#8-state-persistence--containment)
+9. [Alerts](#9-alerts)
+10. [Heuristic-only mode (no LLM)](#10-heuristic-only-mode-no-llm)
+11. [Troubleshooting](#11-troubleshooting)
+12. [Detection scope on brand-new packages](#12-detection-scope-on-brand-new-packages)
 
 ---
 
@@ -165,7 +166,7 @@ so `api_key_env` is **ignored** when `provider = "anthropic"`. Just `export ANTH
 key is missing, that run logs a notice and falls back to heuristic-only — it does not crash.
 
 > Getting the key to your *scheduler* (cron/systemd/Docker/CI), not just your login shell, is the part
-> people miss — see §6 for how each harness injects it.
+> people miss — see §7 for how each harness injects it.
 
 ---
 
@@ -230,7 +231,49 @@ npmdiffwatch -c npmdiffwatch.toml capture-evidence --all           # widen to ev
 
 ---
 
-## 6. Running on a harness (cron / systemd / Docker / CI)
+## 6. The dashboard & the `watch` daemon
+
+Two extras make NpmDiffWatch easier to run and easier to *act on*: a built-in daemon loop and a local HTML
+dashboard of verdicts with one-click "report to npm" links.
+
+**The dashboard** renders every reviewed release as a card — malicious and suspicious sorted first and
+highlighted, benign muted — each with a direct npmjs link, and flagged cards carry a **"Report malware on
+npm"** action so going from "the tool flagged this" to "reported for takedown" is one click. It's a single
+self-contained HTML file with no JavaScript; every untrusted string (package name, the model's reasoning,
+cited code) is HTML-escaped, so a package literally named `<script>…</script>` can't attack the page.
+
+Generate it from whatever the database already holds:
+
+```bash
+npmdiffwatch -c npmdiffwatch.toml dashboard                 # writes .diffwatch/dashboard.html
+npmdiffwatch -c npmdiffwatch.toml dashboard --serve         # also serve it on http://127.0.0.1:8787
+```
+
+`--serve` binds **127.0.0.1 only** (localhost; never exposed to the network) and blocks until Ctrl-C. Use
+`--out PATH` to choose the file and `--port N` to change the port.
+
+**The `watch` daemon** is the built-in alternative to wiring up cron/systemd (§7): it scans on an interval,
+refreshes the dashboard after each tick, and — with `--serve` — serves it the whole time. One command gives
+you a running monitor plus a live results page:
+
+```bash
+npmdiffwatch -c npmdiffwatch.toml seed-now                  # first time only (start "from now")
+npmdiffwatch -c npmdiffwatch.toml watch --serve             # scan every 5 min + live dashboard
+# → open http://127.0.0.1:8787/dashboard.html
+```
+
+`--interval N` sets the seconds between scans (default 300); `--out`/`--port` work as above. A failed scan
+(network blip, endpoint down) is logged and the daemon keeps going; Ctrl-C stops cleanly. The dashboard's
+status strip shows whether your model endpoint is reachable and how long ago the last scan ran — start your
+model server (§2) before `watch --serve`, or reviews fall back to heuristics until it's up.
+
+It is a **foreground** process — keep the terminal open, or run it under your agent harness, which will run
+it as a background task and hand you back the dashboard URL. For unattended, machine-level scheduling,
+prefer the harness patterns in §7.
+
+---
+
+## 7. Running on a harness (cron / systemd / Docker / CI)
 
 NpmDiffWatch is a plain CLI over a local SQLite DB; "running it" means invoking `run` on a schedule under
 whatever runtime you already operate. All four patterns below are equivalent — pick one. Concurrent runs
@@ -342,7 +385,7 @@ jobs:
 
 ---
 
-## 7. State, persistence & containment
+## 8. State, persistence & containment
 
 All state lives under `.diffwatch/` (paths configurable via `db_path`, `cache_dir`, `lock_path`):
 
@@ -365,7 +408,7 @@ three destinations. The OS boundary is what holds if the process itself is ever 
 
 ---
 
-## 8. Alerts
+## 9. Alerts
 
 Set `webhook_url` (top-level, not under `[reviewer]`) to receive each new alert as a JSON POST —
 `{"text": "..."}`, Slack-incoming-webhook compatible:
@@ -378,7 +421,7 @@ Alerts are also printed to stdout and recorded (deduped) in the DB, so a webhook
 
 ---
 
-## 9. Heuristic-only mode (no LLM)
+## 10. Heuristic-only mode (no LLM)
 
 To run with no model at all — rules and weights only, no endpoint required — set:
 
@@ -391,7 +434,7 @@ GPU and no API budget, or to keep monitoring when your endpoint is down.
 
 ---
 
-## 10. Troubleshooting
+## 11. Troubleshooting
 
 | Symptom | Cause / fix |
 |---|---|
@@ -406,7 +449,7 @@ GPU and no API budget, or to keep monitoring when your endpoint is down.
 
 ---
 
-## 11. Detection scope on brand-new packages
+## 12. Detection scope on brand-new packages
 
 The pipeline's core signal is the **version-to-version diff**, so a package's first-ever release has no
 prior version to diff against. `new_package_policy` controls how those are handled:
