@@ -32,6 +32,11 @@ def allowed_hosts(cfg) -> frozenset:
     npm = _host_of(getattr(cfg, "npm_registry", None))
     if npm:
         hosts.add(npm)
+    # ingest polls the replication feed (root update_seq + _changes); its host is
+    # distinct from the registry, so it must be allowed or polling is dead on arrival.
+    replicate = _host_of(getattr(cfg, "npm_replicate", None))
+    if replicate:
+        hosts.add(replicate)
     if getattr(cfg, "reviewer_enabled", True):
         rc = getattr(cfg, "reviewer", None)
         if rc is not None and rc.provider == "openai":
