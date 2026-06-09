@@ -33,6 +33,18 @@ def test_allowed_hosts_includes_registry_reviewer_and_webhook():
     assert "localhost" in hosts
 
 
+def test_allowed_hosts_includes_replication_feed():
+    # ingest polls cfg.npm_replicate (the _changes feed + root update_seq); its host
+    # is distinct from cfg.npm_registry, so the guard must allow it or polling is dead.
+    cfg = dataclasses.replace(
+        Config(),
+        npm_registry="https://registry.npmjs.org",
+        npm_replicate="https://replicate.npmjs.com/registry",
+    )
+    hosts = egress.allowed_hosts(cfg)
+    assert "replicate.npmjs.com" in hosts
+
+
 def test_guard_blocks_disallowed_host_and_uninstalls_cleanly():
     cfg = Config()
     assert not egress.is_installed()

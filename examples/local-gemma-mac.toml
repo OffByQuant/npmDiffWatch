@@ -1,0 +1,25 @@
+# NpmDiffWatch — local Gemma on Apple Silicon (llama.cpp / llama-server).
+#
+# Runtime: build llama.cpp from source with Metal, then serve the model:
+#   ./build/bin/llama-server -m gemma-4-12b-it-UD-Q8_K_XL.gguf -ngl 999 --jinja -c 32768
+# It exposes an OpenAI-compatible API at http://127.0.0.1:8080/v1.
+#
+# Then run NpmDiffWatch against it:
+#   python -m npmdiffwatch -c examples/local-gemma-mac.toml seed-now      # start from now
+#   python -m npmdiffwatch -c examples/local-gemma-mac.toml watch --serve # daemon + dashboard
+#   open http://127.0.0.1:8787/dashboard.html
+#
+# Point base_url / model at your own endpoint (local or remote, OpenAI-compatible).
+
+[reviewer]
+provider = "openai"
+base_url = "http://127.0.0.1:8080/v1"
+model = "gemma-4-12b-it-UD-Q8_K_XL.gguf"
+structured_output = "json_schema"
+max_output_tokens = 4096
+timeout = 120.0
+
+# Gemma is a reasoning model; disable thinking so the token budget goes to the
+# structured verdict instead of chain-of-thought (which otherwise truncates the JSON).
+[reviewer.extra_body]
+chat_template_kwargs = { enable_thinking = false }
