@@ -266,7 +266,9 @@ that shortens the path from "flagged" to "reported to npm".
   `<script>…</script>` cannot attack the dashboard. The render layer is pure functions (no DB, no I/O) so
   this guarantee is unit-tested directly.
 - **Delivery:** `export_dashboard()` writes `dashboard.html`; the `dashboard --serve` CLI serves it over a
-  stdlib `http.server` bound to **`127.0.0.1` only** (read-only static file server, no control endpoints).
+  stdlib `http.server` (read-only static file server, no control endpoints) bound to **`127.0.0.1` by
+  default**. `--host 0.0.0.0` opts into LAN exposure, widening the trust boundary to anyone who can reach
+  the host — localhost stays the default.
 
 ## 11. Watch Daemon
 
