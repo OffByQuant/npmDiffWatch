@@ -1,6 +1,10 @@
-# NpmDiffWatch
+# 🛡️ NpmDiffWatch
 
 **Catch malicious npm updates before they spread — with a cheap local model and rules anyone can write.**
+
+> 🌐 **A community early-warning system for the npm supply chain.** The more people watching the release
+> firehose, the sooner a compromised package gets caught — and reported for takedown. Cheap to run, simple
+> to extend, and you don't need to be a security expert to help.
 
 Supply-chain attacks on open-source packages are escalating: an attacker ships a compromised version of a
 trusted package, and it's pulled into thousands of installs before anyone notices. Defending against that
@@ -11,7 +15,9 @@ you **before** a malicious update spreads — running on hardware you already ha
 It's built for the community to **extend** and to **afford**: the per-release review runs on a **local,
 open-source LLM** (no per-token bill), and detection logic is **plain YAML rules** anyone can contribute.
 
-## How it works
+---
+
+## ⚙️ How it works
 
 ```
 new npm releases → diff against the prior version → community rules score the change
@@ -21,7 +27,9 @@ new npm releases → diff against the prior version → community rules score th
 State lives in a local SQLite database; nothing is hosted, and nothing leaves your machine except the
 calls to the npm registry and the model endpoint you point it at.
 
-## Why NpmDiffWatch
+---
+
+## 💡 Why NpmDiffWatch
 
 - **Cheap by design.** The reviewer is meant to run on a local open-source model — the only setup it has
   been tested against — so watching the whole firehose costs you compute, not API credits. Hosted and
@@ -29,12 +37,14 @@ calls to the npm registry and the model endpoint you point it at.
 - **It never runs what it inspects.** Analyzed packages are *data, never code*: NpmDiffWatch downloads a
   `.tgz` into memory, reads the source statically, and discards it — no `npm install`, no build, no
   `require`, no `node`, no `eval`. Package bytes reach the model only as request-body text, never as a URL
-  it fetches. [More ↓](#run-it-safely)
+  it fetches. [More ↓](#-run-it-safely)
 - **Community rules, run safely.** Detection rules are pure structured data (YAML) evaluated by a matcher
   with no `eval`/`exec` — so you can run other people's rules without running their code. See
   [`rules/community/`](rules/community).
 
-## Get started — the easy way
+---
+
+## 🚀 Get started — the easy way
 
 Clone it, open your favorite agent harness (**Claude Code**, **opencode**, or similar), and give it one prompt:
 
@@ -44,7 +54,9 @@ The agent handles setup and drives the polling loop; your local model does the r
 two-tier idea in a nutshell — a frontier model can **orchestrate** while a cheap local model does the
 **per-release review work**.
 
-## Get started — by hand
+---
+
+## 🛠️ Get started — by hand
 
 No agent required. Plain commands poll the firehose and still use your local LLM for every review:
 
@@ -59,13 +71,21 @@ npmdiffwatch -c npmdiffwatch.toml run           # process new releases (repeat o
 npmdiffwatch -c npmdiffwatch.toml pending       # see suspicious releases awaiting your verdict
 ```
 
-Drop `run` into a cron job, `systemd` timer, container, or CI schedule to monitor continuously. You can
+Prefer one command that scans continuously **and** shows you a live results page? Use the built-in daemon:
+
+```bash
+npmdiffwatch -c npmdiffwatch.toml watch --serve  # scan on a loop + serve the dashboard (↓)
+```
+
+Or drop `run` into a cron job, `systemd` timer, container, or CI schedule to monitor continuously. You can
 also run with **no model at all** (rules-only heuristic alerts) when you have no GPU or budget.
 
-**→ Full setup — endpoints, API keys, scheduling, heuristic-only mode, troubleshooting:
+**→ Full setup — endpoints, API keys, scheduling, the dashboard, heuristic-only mode, troubleshooting:
 [GETTING-STARTED.md](GETTING-STARTED.md)**
 
-## What it records
+---
+
+## 🗄️ What it records
 
 Everything lives in a single local SQLite database under `.diffwatch/` — nothing is hosted. It keeps a
 **cursor** (how far through the npm registry's change stream you've scanned), one **releases** row per
@@ -91,7 +111,9 @@ pkg-e    3.13.0        167740   none              benign
 rack up a huge heuristic score yet be correctly cleared as benign on inspection — catching the false
 positive before it ever becomes an alert.
 
-## See and act on the results
+---
+
+## 🖥️ See and act on the results
 
 Finding a malicious release only matters if it gets reported and pulled. NpmDiffWatch turns the verdicts in
 your database into a **local dashboard** — a single web page of cards, the dangerous ones sorted to the top,
@@ -104,10 +126,13 @@ npmdiffwatch -c npmdiffwatch.toml watch --serve   # keep scanning + open a live 
 # → http://127.0.0.1:8787/dashboard.html
 ```
 
-The page stays on your machine (it's served to `localhost` only) and runs no code from the packages it
-shows. **→ [GETTING-STARTED.md](GETTING-STARTED.md#6-the-dashboard--the-watch-daemon)** for the details.
+The page stays on your machine (it's served to `localhost` only by default — `--host 0.0.0.0` opts into
+sharing it on your LAN) and runs no code from the packages it shows; every untrusted string is HTML-escaped.
+**→ [GETTING-STARTED.md](GETTING-STARTED.md#6-the-dashboard--the-watch-daemon)** for the details.
 
-## Run it safely
+---
+
+## 🔒 Run it safely
 
 NpmDiffWatch ingests untrusted bytes from the npm registry and runs community-authored rules. The
 no-execution design is the primary safeguard, but treat it as one layer: run it in a container, VM, or
@@ -125,7 +150,9 @@ package content anywhere in the pipeline. The download/extraction caps (`max_dow
 `max_member_bytes`, `max_total_bytes`, `max_decompressed_bytes`, …) bound how much of any tarball is ever
 read into memory.
 
-## Bring your own rules
+---
+
+## 🧩 Bring your own rules
 
 NpmDiffWatch ships a **basic starter set** of detection rules — enough to get you catching the obvious
 attacks out of the box, not the last word. The rules live as plain YAML in the
@@ -136,7 +163,51 @@ an `eval` in the same changed file", or "a `postinstall` script added to `packag
 rule in a few minutes — drop another `.yaml` file in that folder and it's picked up automatically. The
 loader is fail-closed: a malformed rule is rejected, never run as code.
 
-## License & attribution
+---
+
+## 🤝 Contributing & community
+
+NpmDiffWatch gets stronger with scale: more people watching the firehose means malicious releases are
+spotted sooner, and more shared rules means more attack patterns caught. You don't need to be a security
+researcher or own a GPU to help.
+
+- **Watch, and report what you catch.** Run it, and when a flagged release is genuinely malicious, report
+  it to npm for takedown — the dashboard's one-click "Report malware on npm" button takes you straight
+  there. Every extra watcher shortens the window an attacker has.
+- **Write a rule.** If you can describe an attack pattern, you can add a YAML rule and open a pull request.
+  See [`rules/community/`](rules/community) for the shipped rules to model yours on. No code, no `eval`.
+- **Share a config or a fix.** Better example configs, clearer docs, and bug fixes are all welcome.
+
+If you can clone a repo and edit a YAML file, you can contribute. That's the whole point.
+
+---
+
+## 🗺️ Roadmap
+
+Directions, not promises — contributions toward any of these are welcome:
+
+- **Deeper binary inspection.** Go beyond flagging native addons (`.node`) and WebAssembly (`.wasm`) to
+  analyzing what they do, so attacks shipped only in a compiled artifact don't slip past.
+- **More alert destinations.** Additional notifier backends beyond the current webhook (e.g. email, chat).
+- **A shared rule index.** Make it easy to discover, pull, and combine rule packs others have written.
+- **A labeled evaluation set.** Measure detection precision/recall against known-malicious npm releases,
+  so rule and weight changes can be scored instead of guessed.
+- **Easier install.** A published package / `pipx` one-liner instead of an editable clone.
+- **Resilient long runs.** Rate-limit-aware, resumable polling of the replication feed for unattended
+  deployments.
+
+---
+
+## 🤖 Built with AI
+
+NpmDiffWatch was developed with heavy use of AI coding agents (Claude Code) alongside the same kind of
+local open-source models it runs on. The parts that matter most — the no-execution boundary, the
+no-`eval` rule matcher, the egress allowlist — are human-reviewed and locked down by the containment test
+suite, so AI assistance never gets to quietly weaken a security invariant.
+
+---
+
+## 📄 License & attribution
 
 MIT — see [LICENSE](LICENSE); applies to NpmDiffWatch's own code, rules, and docs. The vendored
 popularity/typosquat corpus (`npmdiffwatch/data/top_npm_names.txt`) is a snapshot of popular npm package
