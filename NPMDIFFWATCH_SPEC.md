@@ -246,7 +246,42 @@ reviewer_enabled     = true
 # [reviewer] block — provider/base_url/model/structured_output, same for every endpoint
 ```
 
-## 10. The No-Execution Invariant
+## 10. Dashboard & Reporting (`dashboard.py`)
+
+Detection only matters if it leads to a takedown, so persisted verdicts render to a local HTML dashboard
+that shortens the path from "flagged" to "reported to npm".
+
+- **Source:** `store.all_verdicts()` (INNER JOIN `releases` × `verdicts`) — only reviewed releases, ordered
+  malicious → suspicious → benign in SQL.
+- **Render:** `render_dashboard(rows, status, generated_at)` returns one self-contained HTML document —
+  inline CSS, **no JavaScript**, no external assets. Each release is a card: flagged ones (malicious /
+  suspicious) sorted first and highlighted, benign muted.
+- **Action links:** every card links to the package's npm version page; flagged cards add a **"Report
+  malware on npm"** action to the package page (npm's official report path).
+- **Status strip:** reviewer-endpoint reachability (a localhost TCP probe), last-scan age + staleness, and
+  cursor/verdict counts.
+- **XSS containment (security-critical):** cards render strings derived from untrusted package content
+  (name, version, `cited_hunk`, and the model's `reasoning`, which quotes untrusted code). Every untrusted
+  field is `html.escape`d and every URL segment is `urllib.parse.quote`d, so a package named
+  `<script>…</script>` cannot attack the dashboard. The render layer is pure functions (no DB, no I/O) so
+  this guarantee is unit-tested directly.
+- **Delivery:** `export_dashboard()` writes `dashboard.html`; the `dashboard --serve` CLI serves it over a
+  stdlib `http.server` bound to **`127.0.0.1` only** (read-only static file server, no control endpoints).
+
+## 11. Watch Daemon
+
+`watch` is the built-in scheduler alternative to an external cron/systemd tick (§9 documents both models).
+
+- **Loop:** `run_once()` (one scan tick) → `export_dashboard()` (refresh) → sleep `interval` (default 300s),
+  repeated until interrupted.
+- **Resilience:** a failed scan tick (network blip, endpoint down) is logged and the loop continues — one
+  bad tick never kills the daemon. `KeyboardInterrupt` (Ctrl-C) stops it cleanly.
+- **Serving:** `watch --serve` runs the localhost-only file server (§10) on a background thread for the
+  daemon's lifetime, so a single command gives a running monitor plus a live results page.
+- **Mutual exclusion:** like every scan path, ticks take the `flock`; an overlapping external `run` no-ops
+  rather than double-processing.
+
+## 12. The No-Execution Invariant
 
 The hard guarantee, enforced throughout the pipeline and by the containment test suite:
 
