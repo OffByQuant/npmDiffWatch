@@ -108,3 +108,58 @@ def test_changes_url_targets_replicate_feed_with_since_and_limit():
     assert url.startswith("https://replicate.npmjs.com/registry/_changes")
     assert "since=1234" in url
     assert "limit=200" in url
+
+
+def _conn_with(package, versions):
+    import sqlite3
+    conn = sqlite3.connect(":memory:")
+    conn.execute("CREATE TABLE releases(package TEXT, version TEXT)")
+    conn.executemany("INSERT INTO releases VALUES (?, ?)", [(package, v) for v in versions])
+    return conn
+
+
+_HISTORY = _packument(
+    ["1.0.0", "2.0.0", "3.0.0"],
+    times={"1.0.0": "2020-01-01T00:00:00.000Z",
+           "2.0.0": "2022-01-01T00:00:00.000Z",
+           "3.0.0": "2026-09-23T18:00:00.000Z"},
+    latest="3.0.0",
+)
+
+
+def test_reseen_row_resolves_to_known_newest_not_older_history(monkeypatch):
+    """A retry / re-read of the same feed row (or a metadata-only change such as a
+    deprecation) must resolve to the version already recorded, so run_once can skip
+    it (terminal) or retry it (review_failed) — never walk back to 2.0.0 from 2022."""
+    cfg = Config()
+    changes = {"results": [{"seq": 4000, "id": "pkg", "changes": [{"rev": "9-a"}]}], "last_seq": 4000}
+    monkeypatch.setattr(ingest, "_fetch_json", _fake_http({"_changes": changes, "/pkg": _HISTORY}))
+    page = ingest.changes_since(cfg, 3999, conn=_conn_with("pkg", ["3.0.0"]), limit=200)
+    assert [r.version for r in page.releases] == ["3.0.0"]
+
+
+def test_new_version_after_known_is_still_picked(monkeypatch):
+    cfg = Config()
+    changes = {"results": [{"seq": 4001, "id": "pkg", "changes": [{"rev": "10-b"}]}], "last_seq": 4001}
+    monkeypatch.setattr(ingest, "_fetch_json", _fake_http({"_changes": changes, "/pkg": _HISTORY}))
+    page = ingest.changes_since(cfg, 4000, conn=_conn_with("pkg", ["2.0.0"]), limit=200)
+    assert [r.version for r in page.releases] == ["3.0.0"]
+
+
+def test_packuments_are_fetched_concurrently(monkeypatch):
+    """At ~1s per packument, a serial loop tops out near npm's own feed rate (~58 packages/min at
+    peak) and never catches up. Two lookups must be in flight at once: the barrier only releases
+    when both threads reach it, and a serial loop would time out on the first."""
+    import threading
+    cfg = Config()
+    barrier = threading.Barrier(2, timeout=5)
+    changes = {"results": [{"seq": 5001, "id": "a"}, {"seq": 5002, "id": "b"}], "last_seq": 5002}
+
+    def fake(url, cfg):
+        if "_changes" in url:
+            return changes
+        barrier.wait()
+        return _packument(["1.0.0"], times={"1.0.0": "2026-01-01T00:00:00.000Z"})
+    monkeypatch.setattr(ingest, "_fetch_json", fake)
+    page = ingest.changes_since(cfg, 5000, conn=None, limit=200)
+    assert [(r.package, r.serial) for r in page.releases] == [("a", 5001), ("b", 5002)]
