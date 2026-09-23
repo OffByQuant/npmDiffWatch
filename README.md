@@ -69,6 +69,7 @@ cp examples/local-qwen.toml npmdiffwatch.toml   # point at your local model endp
 npmdiffwatch -c npmdiffwatch.toml seed-now      # start watching "from now"
 npmdiffwatch -c npmdiffwatch.toml run           # process new releases (repeat on a schedule)
 npmdiffwatch -c npmdiffwatch.toml pending       # see suspicious releases awaiting your verdict
+npmdiffwatch -c npmdiffwatch.toml review-pending # review what the LLM couldn't (e.g. with a bigger model)
 ```
 
 Prefer one command that scans continuously **and** shows you a live results page? Use the built-in daemon:

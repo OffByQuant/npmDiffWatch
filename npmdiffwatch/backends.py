@@ -100,7 +100,7 @@ class OpenAICompatibleBackend:
         key = os.environ.get(self.api_key_env)
         return {"Authorization": f"Bearer {key}"} if key else {}
 
-    def complete(self, *, model, system, user_text, schema, max_tokens) -> str:
+    def complete(self, *, model, system, user_text, schema, max_tokens, timeout=None) -> str:
         payload = {
             "model": model,
             "messages": [{"role": "system", "content": system},
@@ -116,7 +116,8 @@ class OpenAICompatibleBackend:
         if self.extra_body:
             payload.update(self.extra_body)
         try:
-            data = self._post(f"{self.endpoint}/chat/completions", payload, self._timeout, self._auth_headers())
+            data = self._post(f"{self.endpoint}/chat/completions", payload, timeout or self._timeout,
+                              self._auth_headers())
         except Exception as e:                    # connection/timeout/HTTP -> fallback (with a fix hint)
             raise ReviewUnavailable(_egress_hint(e)) from e
         try:
@@ -142,10 +143,11 @@ class AnthropicBackend:
             client = anthropic.Anthropic()
         self.client = client
 
-    def complete(self, *, model, system, user_text, schema, max_tokens) -> str:
+    def complete(self, *, model, system, user_text, schema, max_tokens, timeout=None) -> str:
         import anthropic
         try:
             resp = self.client.messages.create(
+                **({"timeout": timeout} if timeout else {}),
                 model=model,
                 max_tokens=max_tokens,
                 thinking={"type": "adaptive"},

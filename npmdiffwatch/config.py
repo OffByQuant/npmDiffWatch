@@ -11,7 +11,9 @@ class ReviewerConfig:
     api_key_env: str | None = None
     structured_output: str = "json_schema"
     escalation_model: str | None = None
-    timeout: float = 120.0
+    timeout: float = 300.0             # per-attempt: retry n waits timeout x n (300s, 600s, 900s)
+    max_review_attempts: int = 3
+    max_pending_per_tick: int = 20     # queued reviews retried at the start of each tick
     max_input_chars: int = 200_000
     max_output_tokens: int = 8192
     opus_escalation_confidence: float = 0.6
