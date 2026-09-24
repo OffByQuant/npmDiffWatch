@@ -10,12 +10,13 @@ import json
 
 from npmdiffwatch import reviewer
 from npmdiffwatch.config import Config
-from npmdiffwatch.models import Diff, TriageResult
+from npmdiffwatch.models import Diff, FileDiff, Hunk, TriageResult
 
 
 def _diff():
     return Diff(package="p", version="1.0.0", is_first_release=False,
-                changed=[], added_binaries=[])
+                changed=[FileDiff("index.js", "modified", [Hunk((0, 1), (0, 1), ["x()"], [])])],
+                added_binaries=[])
 
 
 def _triage():

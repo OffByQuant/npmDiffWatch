@@ -1,6 +1,7 @@
 import datetime
 import json
 import sqlite3
+import zlib
 from .config import Config
 
 SCHEMA = """
@@ -33,11 +34,12 @@ def connect(cfg: Config) -> sqlite3.Connection:
 def init_schema(conn): conn.executescript(SCHEMA); conn.commit(); migrate_schema(conn)
 
 def migrate_schema(conn):
-    for col in ("maintainer_metadata", "evidence", "packument_json", "scripts_json", "has_lockfile", "has_shrinkwrap"):
+    for col in ("maintainer_metadata", "evidence", "packument_json", "scripts_json", "has_lockfile", "has_shrinkwrap",
+                "review_attempts", "pending_reason", "pending_detail", "review_input"):
         try:
             conn.execute(f"SELECT {col} FROM releases LIMIT 1")
         except sqlite3.OperationalError:
-            if col in ("has_lockfile", "has_shrinkwrap"):
+            if col in ("has_lockfile", "has_shrinkwrap", "review_attempts"):
                 conn.execute(f"ALTER TABLE releases ADD COLUMN {col} INTEGER DEFAULT 0")
             else:
                 conn.execute(f"ALTER TABLE releases ADD COLUMN {col} TEXT")
@@ -79,11 +81,8 @@ def update_release_metadata(conn, release_id, maintainer_metadata_json):
                  (maintainer_metadata_json, release_id))
     conn.commit()
 
-def update_npm_metadata(conn, release_id, packument_json=None, scripts_json=None,
-                        has_lockfile=None, has_shrinkwrap=None):
+def update_npm_metadata(conn, release_id, scripts_json=None, has_lockfile=None, has_shrinkwrap=None):
     sets, params = [], []
-    if packument_json is not None:
-        sets.append("packument_json=?"); params.append(packument_json)
     if scripts_json is not None:
         sets.append("scripts_json=?"); params.append(scripts_json)
     if has_lockfile is not None:
@@ -95,6 +94,14 @@ def update_npm_metadata(conn, release_id, packument_json=None, scripts_json=None
     params.append(release_id)
     conn.execute(f"UPDATE releases SET {', '.join(sets)} WHERE id=?", params)
     conn.commit()
+
+def prune(conn):
+    """Clear packuments stored by versions that kept them (never read; up to 65 MB each), then
+    compact the file. Verdicts, evidence and queued review inputs are kept."""
+    conn.execute("UPDATE releases SET packument_json=NULL WHERE packument_json IS NOT NULL")
+    conn.commit()
+    conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    conn.execute("VACUUM")
 
 def update_evidence(conn, release_id, evidence_text):
     conn.execute("UPDATE releases SET evidence=? WHERE id=?", (evidence_text, release_id))
@@ -122,6 +129,43 @@ def get_release_metadata(conn, package, version):
     row = conn.execute("SELECT maintainer_metadata FROM releases WHERE package=? AND version=?",
                        (package, version)).fetchone()
     return json.loads(row[0]) if row and row[0] else None
+
+def review_attempts(conn, release_id) -> int:
+    return conn.execute("SELECT review_attempts FROM releases WHERE id=?", (release_id,)).fetchone()[0] or 0
+
+def bump_review_attempts(conn, release_id) -> int:
+    conn.execute("UPDATE releases SET review_attempts=COALESCE(review_attempts,0)+1 WHERE id=?", (release_id,))
+    conn.commit()
+    return review_attempts(conn, release_id)
+
+def park_for_review(conn, release_id, reason, detail, review_input):
+    """Queue a flagged release for a later LLM review. The review input is kept (compressed) so the
+    review doesn't depend on npm still hosting the tarball; it is dropped once a verdict lands."""
+    conn.execute("UPDATE releases SET stage='pending_review', pending_reason=?, pending_detail=?, "
+                 "review_input=? WHERE id=?",
+                 (reason, detail, zlib.compress(review_input.encode()), release_id))
+    conn.commit()
+
+def clear_pending(conn, release_id):
+    conn.execute("UPDATE releases SET pending_reason=NULL, pending_detail=NULL, review_input=NULL WHERE id=?",
+                 (release_id,))
+    conn.commit()
+
+def pending_reviews(conn, reasons=None):
+    sql = ("SELECT id AS release_id, package, version, triage_score, triage_rules, pending_reason, "
+           "pending_detail, COALESCE(review_attempts,0) AS review_attempts, review_input "
+           "FROM releases WHERE stage='pending_review'")
+    params = list(reasons or [])
+    if params:
+        sql += f" AND pending_reason IN ({','.join('?' * len(params))})"
+    return conn.execute(sql + " ORDER BY id", params).fetchall()
+
+def review_input(row) -> str:
+    return zlib.decompress(row["review_input"]).decode()
+
+def pending_review_counts(conn) -> dict:
+    return dict(conn.execute("SELECT pending_reason, count(*) FROM releases WHERE stage='pending_review' "
+                             "GROUP BY pending_reason").fetchall())
 
 def update_stage(conn, release_id, stage, score=None, rules=None):
     sets = ["stage=?"]; params = [stage]

@@ -2,6 +2,7 @@ import json
 import logging
 import urllib.request
 import urllib.error
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
 from .config import Config
@@ -65,19 +66,28 @@ def _known_versions(conn, package: str) -> set[str]:
     return {r[0] for r in rows}
 
 
-def _newest_unseen_version(cfg: Config, package: str, conn) -> str | None:
+def _newest_unseen_version(packument: dict | None, package: str, conn) -> str | None:
     """The version a `_changes` row most likely refers to: the newest-by-publish
     version not already recorded. The feed row carries only a rev, not a version,
     so we resolve it from the packument's time map (falling back to dist-tags)."""
-    packument = _fetch_json(_packument_url(package, cfg), cfg)
     if not packument or "versions" not in packument:
         return None
     versions = packument.get("versions", {})
     known = _known_versions(conn, package) if conn is not None else set()
-    unseen = [v for v in versions if v not in known]
+    times = packument.get("time", {}) or {}
+    known_timed = [(times[v], v) for v in known if v in times and v in versions]
+    if known_timed:
+        # Only versions published after the newest recorded one are candidates. A re-read row
+        # (retry after review_failed, or a metadata-only change) resolves to that recorded version,
+        # so run_once skips it (terminal) or retries it — never walks back into years-old history.
+        newest_known_time, newest_known = max(known_timed)
+        unseen = [v for v in versions if v not in known and times.get(v, "") > newest_known_time]
+        if not unseen:
+            return newest_known
+    else:
+        unseen = [v for v in versions if v not in known]
     if not unseen:
         return None
-    times = packument.get("time", {}) or {}
     timed = [(times[v], v) for v in unseen if v in times]
     if timed:
         # npm timestamps are zero-padded UTC ISO-8601, so lexicographic == chronological.
@@ -94,6 +104,7 @@ def changes_since(cfg: Config, since_serial: int, conn=None, *, limit: int | Non
     if not data or "results" not in data:
         return ChangesPage(releases, watermark)
 
+    rows = []
     for row in data.get("results", []):
         seq = row.get("seq")
         if isinstance(seq, int) and seq > watermark:
@@ -103,10 +114,18 @@ def changes_since(cfg: Config, since_serial: int, conn=None, *, limit: int | Non
         name = row.get("id")
         if not name or not isinstance(seq, int):
             continue
-        version = _newest_unseen_version(cfg, name, conn)
-        if version is None:
-            continue
-        releases.append(NewRelease(package=name, version=version, serial=seq))
+        rows.append((name, seq))
+
+    # Packument fetches dominate a tick (~1s each); run them concurrently. Version resolution reads
+    # the DB, so it stays on this thread. Each packument is resolved and dropped as it arrives rather
+    # than collected: some are tens of MB parsed, and a page holds up to max_releases_per_run of them.
+    with ThreadPoolExecutor(max_workers=max(1, cfg.fetch_concurrency)) as ex:
+        fetched = ex.map(lambda r: _fetch_json(_packument_url(r[0], cfg), cfg), rows)
+        for (name, seq), packument in zip(rows, fetched):
+            version = _newest_unseen_version(packument, name, conn)
+            if version is None:
+                continue
+            releases.append(NewRelease(package=name, version=version, serial=seq))
 
     last_seq = data.get("last_seq")
     if isinstance(last_seq, int) and last_seq > watermark:

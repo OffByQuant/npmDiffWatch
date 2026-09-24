@@ -118,3 +118,10 @@ def test_export_dashboard_includes_status(tmp_path):
     conn.close()
     html = Path(orchestrator.export_dashboard(cfg)).read_text()
     assert "13579" in html  # cursor serial in the status strip
+
+
+def test_render_shows_pending_llm_review_by_reason():
+    html = dashboard.render_dashboard([], status=_status(
+        pending_review={"too_large": 2, "endpoint_unreachable": 5}))
+    assert "7 pending LLM review" in html
+    assert "too_large: 2" in html and "endpoint_unreachable: 5" in html
