@@ -21,6 +21,9 @@ CREATE TABLE IF NOT EXISTS verdicts(id INTEGER PRIMARY KEY,
   release_id INTEGER UNIQUE, classification TEXT, confidence REAL,
   attack_type TEXT, reasoning TEXT, cited_hunk TEXT, model TEXT, urgent INTEGER,
   created_at TEXT, human_label TEXT, human_note TEXT, adjudicated_at TEXT);
+CREATE TABLE IF NOT EXISTS reviewer_stats(endpoint TEXT, model TEXT, tok_s REAL, chars_per_token REAL,
+  samples INTEGER, state TEXT, detail TEXT, paused_until REAL, slow_streak INTEGER, updated_at TEXT,
+  PRIMARY KEY(endpoint, model));
 """
 
 def _now(): return datetime.datetime.now(datetime.UTC).isoformat()
@@ -166,6 +169,23 @@ def review_input(row) -> str:
 def pending_review_counts(conn) -> dict:
     return dict(conn.execute("SELECT pending_reason, count(*) FROM releases WHERE stage='pending_review' "
                              "GROUP BY pending_reason").fetchall())
+
+def get_reviewer_stats(conn, endpoint, model):
+    row = conn.execute("SELECT tok_s, chars_per_token, samples, state, detail, paused_until, slow_streak "
+                       "FROM reviewer_stats WHERE endpoint=? AND model=?", (endpoint, model)).fetchone()
+    return dict(row) if row else None
+
+def save_reviewer_stats(conn, endpoint, model, *, tok_s, chars_per_token, samples, state, detail,
+                        paused_until, slow_streak):
+    conn.execute("""INSERT INTO reviewer_stats(endpoint, model, tok_s, chars_per_token, samples, state, detail,
+                        paused_until, slow_streak, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)
+                    ON CONFLICT(endpoint, model) DO UPDATE SET tok_s=excluded.tok_s,
+                        chars_per_token=excluded.chars_per_token, samples=excluded.samples,
+                        state=excluded.state, detail=excluded.detail, paused_until=excluded.paused_until,
+                        slow_streak=excluded.slow_streak, updated_at=excluded.updated_at""",
+                 (endpoint, model, tok_s, chars_per_token, samples, state, detail, paused_until,
+                  slow_streak, _now()))
+    conn.commit()
 
 def update_stage(conn, release_id, stage, score=None, rules=None):
     sets = ["stage=?"]; params = [stage]
