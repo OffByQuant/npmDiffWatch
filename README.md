@@ -58,28 +58,35 @@ two-tier idea in a nutshell — a frontier model can **orchestrate** while a che
 
 ## 🛠️ Get started — by hand
 
-No agent required. Plain commands poll the firehose and still use your local LLM for every review:
+No agent required. Clone, install, and start scanning with your model server's model name:
 
 ```bash
 git clone https://github.com/OffByQuant/npmDiffWatch npmdiffwatch && cd npmdiffwatch
-python3 -m venv .venv && . .venv/bin/activate
-pip install -e .                                # requires Python 3.11+
+python3 -m venv ~/diffwatch && . ~/diffwatch/bin/activate   # one venv for npmDiffWatch and PyDiffWatch
+pip install -e .                                           # requires Python 3.11+
 
-cp examples/local-qwen.toml npmdiffwatch.toml   # point at your local model endpoint
-npmdiffwatch -c npmdiffwatch.toml seed-now      # start watching "from now"
-npmdiffwatch -c npmdiffwatch.toml run           # process new releases (repeat on a schedule)
-npmdiffwatch -c npmdiffwatch.toml pending       # see suspicious releases awaiting your verdict
+npmdiffwatch --model qwen-singleshot watch --serve --recent 500
+# → scans npm, reviews flagged releases with your model, dashboard at http://127.0.0.1:8787/dashboard.html
+```
+
+- `--model` is the model name your OpenAI-compatible server expects (llama.cpp, llama-swap, Ollama, vLLM).
+  No API key needed.
+- `--endpoint` is where that server listens. Leave it out for `http://localhost:8000/v1`, or point it at
+  another machine: `--endpoint http://192.168.1.20:8000/v1`.
+- `--recent 500` starts 500 npm changes back, so results show up within minutes. Leave it out to watch
+  only what's published from now on. Once scanning has started, a restart resumes where it stopped, and
+  while a backlog is waiting `watch` scans back-to-back, sleeping only once it has caught up.
+
+For everything else (a frontier API with a key, reasoning-model settings, webhooks) use a config file:
+`cp examples/local-qwen.toml npmdiffwatch.toml`, then pass `-c npmdiffwatch.toml`. Other commands:
+
+```bash
+npmdiffwatch -c npmdiffwatch.toml run            # one scan tick (for cron, systemd, CI)
+npmdiffwatch -c npmdiffwatch.toml pending        # suspicious releases awaiting your verdict
 npmdiffwatch -c npmdiffwatch.toml review-pending # review what the LLM couldn't (e.g. with a bigger model)
 ```
 
-Prefer one command that scans continuously **and** shows you a live results page? Use the built-in daemon:
-
-```bash
-npmdiffwatch -c npmdiffwatch.toml watch --serve  # scan on a loop + serve the dashboard (↓)
-```
-
-Or drop `run` into a cron job, `systemd` timer, container, or CI schedule to monitor continuously. You can
-also run with **no model at all** (rules-only heuristic alerts) when you have no GPU or budget.
+You can also run with **no model at all** (rules-only heuristic alerts) when you have no GPU or budget.
 
 **→ Full setup — endpoints, API keys, scheduling, the dashboard, heuristic-only mode, troubleshooting:
 [GETTING-STARTED.md](GETTING-STARTED.md)**

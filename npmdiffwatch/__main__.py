@@ -1,4 +1,5 @@
 import argparse
+import dataclasses
 from . import egress
 from .config import Config, load_config
 from .orchestrator import (run_once, seed_now, list_pending, adjudicate, get_evidence,
@@ -8,7 +9,12 @@ from .guard import describe
 
 
 def _cfg(args):
-    return load_config(args.config) if args.config else Config()
+    cfg = load_config(args.config) if args.config else Config()
+    if args.model or args.endpoint:       # an OpenAI-compatible server (llama.cpp, llama-swap, Ollama, vLLM)
+        rc = dataclasses.replace(cfg.reviewer, provider="openai", model=args.model or cfg.reviewer.model,
+                                 base_url=args.endpoint or cfg.reviewer.base_url)
+        cfg = dataclasses.replace(cfg, reviewer=rc, reviewer_enabled=True)
+    return cfg
 
 
 def _reach(host):
@@ -31,11 +37,19 @@ def main():
     p = argparse.ArgumentParser(prog="npmdiffwatch")
     p.add_argument("-c", "--config", default=None,
                    help="path to a npmdiffwatch.toml config file (see examples/); defaults to built-ins")
+    p.add_argument("--model", default=None,
+                   help="reviewer model name on an OpenAI-compatible server (llama.cpp, llama-swap, Ollama, "
+                        "vLLM); no API key needed. Overrides the config file")
+    p.add_argument("--endpoint", default=None,
+                   help="that server's URL (default: http://localhost:8000/v1), e.g. "
+                        "http://192.168.1.20:8000/v1 for a model on another machine")
     sub = p.add_subparsers(dest="cmd", required=True)
     runp = sub.add_parser("run", help="process new releases since the cursor (one tick)")
     runp.add_argument("--backfill", action="store_true",
                       help="process from the cursor as-is (npm genesis on a fresh DB) instead of "
                            "seeding a fresh cursor to now")
+    runp.add_argument("--recent", type=int, default=None, metavar="N",
+                      help="on a fresh database, start N npm changes back instead of now")
     sub.add_parser("seed-now",
                    help="set the cursor to now and exit (start monitoring from now)")
     sub.add_parser("pending",
@@ -80,6 +94,9 @@ def main():
     wp.add_argument("--interval", type=int, default=300,
                     help="seconds between scans (default: 300)")
     wp.add_argument("--out", default=None, help="dashboard HTML path (default: <db dir>/dashboard.html)")
+    wp.add_argument("--recent", type=int, default=None, metavar="N",
+                    help="on a fresh database, start N npm changes back instead of now, so the dashboard "
+                         "fills within minutes (ignored once scanning has started)")
     wp.add_argument("--serve", action="store_true",
                     help="also serve the dashboard on 127.0.0.1 (localhost only) while watching")
     wp.add_argument("--port", type=int, default=8787, help="port for --serve (default: 8787)")
@@ -90,7 +107,7 @@ def main():
     cfg = _cfg(args)
     egress.install_guard(cfg)
     if args.cmd == "run":
-        n = run_once(cfg, seed_if_fresh=not args.backfill)
+        n = run_once(cfg, seed_if_fresh=not args.backfill, recent=args.recent)
         print(f"[npmdiffwatch] processed {n} releases")
     elif args.cmd == "seed-now":
         s = seed_now(cfg)
@@ -164,7 +181,7 @@ def main():
             threading.Thread(target=httpd.serve_forever, daemon=True).start()
             print(f"[npmdiffwatch] serving http://{args.host}:{args.port}/{out.name} ({_reach(args.host)})")
         print(f"[npmdiffwatch] watching — scanning every {args.interval}s, Ctrl-C to stop")
-        n = watch(cfg, interval=args.interval, out_path=args.out)
+        n = watch(cfg, interval=args.interval, out_path=args.out, recent=args.recent)
         if httpd:
             httpd.server_close()
         print(f"\n[npmdiffwatch] stopped after {n} scan(s)")

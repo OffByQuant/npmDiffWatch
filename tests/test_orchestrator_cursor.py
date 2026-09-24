@@ -56,3 +56,25 @@ def test_blocked_release_pins_cursor_for_retry(tmp_path, monkeypatch):
     conn = store.connect(cfg)
     # Must NOT jump to the watermark (5100) past the unprocessed release.
     assert store.get_last_serial(conn) == 5000
+
+
+def test_recent_starts_a_fresh_cursor_n_changes_back_and_scans_in_the_same_tick(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(ingest, "current_serial", lambda c: 10_000)
+    seen = []
+    monkeypatch.setattr(ingest, "changes_since",
+                        lambda c, since, *a, **k: seen.append(since) or ChangesPage(releases=[], watermark=9_700))
+    orchestrator.run_once(cfg, recent=500)
+    assert seen == [9_500]
+    assert store.get_last_serial(store.connect(cfg)) == 9_700
+
+
+def test_recent_is_ignored_once_the_cursor_is_set(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    _seed_cursor(cfg, 5000)
+    monkeypatch.setattr(ingest, "current_serial", lambda c: 10_000)
+    seen = []
+    monkeypatch.setattr(ingest, "changes_since",
+                        lambda c, since, *a, **k: seen.append(since) or ChangesPage(releases=[], watermark=5100))
+    orchestrator.run_once(cfg, recent=500)
+    assert seen == [5000]

@@ -170,6 +170,22 @@ def _fetch_one(cfg, rel):
         return e
 
 
+_REFUSALS = {
+    "decompressed-size": "it unpacks to more than the size limit",
+    "members": "it has more files than the limit",
+    "member-name": "a file path escapes the package (absolute or '..')",
+    "member-size": "one file is over the size limit",
+    "total-size": "its files add up to more than the size limit",
+}
+
+
+def _refusal_note(reason: str) -> str:
+    why = _REFUSALS.get(reason) or ("it is not a readable gzip tarball" if reason.startswith("bad-archive") else "")
+    return (f"UNREVIEWED: npmdiffwatch refused to unpack this tarball ({reason}{': ' + why if why else ''}), so "
+            f"nothing in it was scanned. Oversized or malformed archives can hide a payload from scanners. "
+            f"Needs manual review.")
+
+
 def _process_fetched(cfg, conn, rvw, ruleset, rel, result, offline=False, guard=None) -> bool:
     rid = store.record_release(conn, rel.package, rel.version, rel.serial, False, None, "tgz")
     if isinstance(result, fetcher.RefusedToFetch):
@@ -177,8 +193,11 @@ def _process_fetched(cfg, conn, rvw, ruleset, rel, result, offline=False, guard=
         return True
     if isinstance(result, fetcher.RefusedToExtract):
         store.update_stage(conn, rid, "refused_to_extract")
-        notifier.emit(cfg, conn, Verdict(rel.package, rel.version,
-                      "suspicious-heuristic", 0.0, [], False), rid)
+        # Never unpacked, so never scanned: queue it for a human (`pending`) and say why in the alert.
+        v = Verdict(rel.package, rel.version, "suspicious", 0.0, [], False, confidence=0.0, attack_type="none",
+                    reasoning=_refusal_note(str(result)), cited_hunk="", recommended_action="monitor", model="none")
+        store.record_verdict(conn, rid, v)
+        notifier.emit(cfg, conn, dataclasses.replace(v, classification="suspicious-heuristic"), rid)
         return True
     if isinstance(result, Exception):
         logger.warning("fetch_failed for %s==%s; will retry next tick", rel.package, rel.version)
@@ -227,7 +246,7 @@ def seed_now(cfg: Config):
     return s
 
 
-def run_once(cfg: Config, *, seed_if_fresh: bool = True) -> int:
+def run_once(cfg: Config, *, seed_if_fresh: bool = True, recent: int | None = None) -> int:
     if not egress.is_installed():
         logger.warning("egress guard not installed; this process has no in-process host allowlist "
                        "(see docs/hardening/egress-allowlist.md or call egress.install_guard(cfg))")
@@ -266,9 +285,14 @@ def run_once(cfg: Config, *, seed_if_fresh: bool = True) -> int:
                 logger.warning("fresh cursor but npm registry unavailable; skipping run "
                                "(retry next tick). Use 'run --backfill' to process from genesis.")
                 return 0
-            store.set_last_serial(conn, now_serial)
-            logger.info("fresh cursor seeded to npm serial %d; monitoring starts now", now_serial)
-            return 0
+            if not recent:
+                store.set_last_serial(conn, now_serial)
+                logger.info("fresh cursor seeded to npm serial %d; monitoring starts now", now_serial)
+                return 0
+            last = max(now_serial - recent, 0)      # start N changes back and scan them this tick
+            store.set_last_serial(conn, last)
+            print(f"[npmdiffwatch] starting {recent:,} npm changes back (serial {last:,}); catching up to now",
+                  flush=True)
 
         rvw = _build_reviewer(cfg)
         ruleset = _load_ruleset(cfg)
@@ -367,7 +391,9 @@ def list_pending(cfg: Config):
     for row in store.pending_adjudication(conn):
         stored = row["evidence"]
         diff_text, err = stored, None
-        if not stored:
+        if row["stage"] == "refused_to_extract":
+            err = "tarball refused, not unpacked (see reason); inspect it by hand"
+        elif not stored:
             try:
                 art = fetcher.fetch_artifacts(cfg, NewRelease(row["package"], row["version"], row["serial"]))
                 if art is not None:
@@ -396,8 +422,28 @@ def get_evidence(cfg: Config, release_id: int):
 _FLAGGED = ("malicious", "suspicious")
 
 
-def watch(cfg: Config, interval: int = 300, out_path=None, iterations=None, sleep_fn=None):
-    """Daemon loop: scan one tick, refresh the dashboard, sleep, repeat until Ctrl-C.
+def _cursor(cfg) -> int:
+    conn = store.connect(cfg); store.init_schema(conn)
+    try:
+        return store.get_last_serial(conn)
+    finally:
+        conn.close()
+
+
+def _behind(cfg, before: int) -> bool:
+    """True when the tick moved the cursor and at least a full page of npm changes is still waiting. A
+    pinned cursor (a release that keeps failing to fetch) is never "behind": retrying it back-to-back
+    would hammer npm."""
+    after = _cursor(cfg)
+    if after <= before:
+        return False
+    head = ingest.current_serial(cfg)
+    return head is not None and head - after >= cfg.max_releases_per_run
+
+
+def watch(cfg: Config, interval: int = 300, out_path=None, iterations=None, sleep_fn=None, recent=None):
+    """Daemon loop: scan one tick, refresh the dashboard, sleep, repeat until Ctrl-C. While a backlog is
+    waiting (a --recent start, or a restart after downtime) the next tick starts at once instead.
     A failed scan is logged and skipped (the daemon stays up); the dashboard is
     refreshed every tick so 'last poll' / reachability stay current. `iterations`
     and `sleep_fn` exist for tests; in production both default to forever / time.sleep."""
@@ -406,15 +452,17 @@ def watch(cfg: Config, interval: int = 300, out_path=None, iterations=None, slee
     n = 0
     try:
         while iterations is None or n < iterations:
+            before = _cursor(cfg)
             try:
-                run_once(cfg)
+                run_once(cfg, recent=recent)
             except Exception:
                 logger.exception("watch: scan tick failed; daemon continuing")
             export_dashboard(cfg, out_path=out_path)
             n += 1
             if iterations is not None and n >= iterations:
                 break
-            sleep_fn(interval)
+            if not _behind(cfg, before):
+                sleep_fn(interval)
     except KeyboardInterrupt:
         pass
     return n

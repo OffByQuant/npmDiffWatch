@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from .config import Config
 from .models import NewRelease
 from . import egress
+from .fetcher import read_body
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +31,7 @@ def _fetch_json(url: str, cfg: Config) -> dict | None:
     req = urllib.request.Request(url, headers={"User-Agent": "npmdiffwatch/0.1"})
     try:
         with urllib.request.urlopen(req, timeout=cfg.fetch_timeout_s) as r:
-            return json.loads(r.read())
+            return json.loads(read_body(r, cfg))
     except urllib.error.HTTPError as e:
         if e.code == 404:
             return None
