@@ -177,9 +177,9 @@ def _attempt_cfg(cfg, failed: int):
 
 
 def _scan_failed(cfg, conn, rid, rel, err) -> bool:
-    """A failed download or processing attempt. Retried on the next scans (the release holds the cursor while
-    it waits); after the first try and store.FEED_RETRIES retries it is given up on visibly, so one release
-    that always fails can't stall the scan. Returns whether the release is done."""
+    """A failed download or processing attempt. Retried at the start of the next scans (the cursor moves on);
+    after the first try and store.FEED_RETRIES retries it is given up on visibly. Returns whether the release
+    is done."""
     why = f"{type(err).__name__}: {err}"
     n = store.bump_scan_attempts(conn, rid)
     if n <= store.FEED_RETRIES:
@@ -359,10 +359,13 @@ def run_once(cfg: Config, *, seed_if_fresh: bool = True, recent: int | None = No
             _baseline_step(cfg, conn, rvw, ruleset, watch, offline, guard)
         page = ingest.changes_since(cfg, last, conn, limit=cfg.max_releases_per_run, watch=watch)
         releases = page.releases
-        prepared = [(rel, store.get_stage(conn, rel.package, rel.version)) for rel in releases]
+        # Releases that failed on an earlier scan are retried first, from the database; one seen again in the
+        # feed waits for its retry, so it is tried once per scan.
+        prepared = [(NewRelease(r["package"], r["version"], r["serial"]), "fetch_failed")
+                    for r in store.scan_retries_due(conn)]
+        prepared += [(rel, stg) for rel in releases
+                     if (stg := store.get_stage(conn, rel.package, rel.version)) != "fetch_failed"]
 
-        advance_to = last
-        blocked = False
         W = max(1, cfg.fetch_concurrency)
         with ThreadPoolExecutor(max_workers=W) as ex:
             for start in range(0, len(prepared), W):
@@ -371,19 +374,10 @@ def run_once(cfg: Config, *, seed_if_fresh: bool = True, recent: int | None = No
                                      _attempt_cfg(cfg, store.scan_attempts(conn, rel.package, rel.version)), rel)
                         for i, (rel, stg) in enumerate(window) if stg not in TERMINAL}
                 for i, (rel, stg) in enumerate(window):
-                    if stg in TERMINAL:
-                        terminal = True
-                    else:
-                        terminal = _process_fetched(cfg, conn, rvw, ruleset, rel, futs[i].result(), offline, guard)
-                    if terminal and not blocked:
-                        advance_to = rel.serial
-                    else:
-                        blocked = True
-        # Nothing stuck: advance past the whole window, including release-less
-        # tail changes, so the cursor never stalls on a page that yields no work.
-        if not blocked:
-            advance_to = max(advance_to, page.watermark)
-        store.set_last_serial(conn, advance_to)
+                    if stg not in TERMINAL:
+                        _process_fetched(cfg, conn, rvw, ruleset, rel, futs[i].result(), offline, guard)
+        # A release that failed waits in the retry list, not on the cursor, so the scan always moves on.
+        store.set_last_serial(conn, max(last, page.watermark))
         try:
             store.maybe_prune(conn, cfg.retention_days, cfg.prune_every_hours * 3600, time.time())
         except sqlite3.Error:
@@ -493,9 +487,8 @@ def _cursor(cfg) -> int:
 
 
 def _behind(cfg, before: int) -> bool:
-    """True when the tick moved the cursor and at least a full page of npm changes is still waiting. A
-    pinned cursor (a release that keeps failing to fetch) is never "behind": retrying it back-to-back
-    would hammer npm."""
+    """True when the tick moved the cursor and at least a full page of npm changes is still waiting. A cursor
+    that didn't move (the feed couldn't be read) is never "behind": retrying it back-to-back would hammer npm."""
     after = _cursor(cfg)
     if after <= before:
         return False

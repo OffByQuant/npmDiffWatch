@@ -334,6 +334,11 @@ def bump_scan_attempts(conn, release_id) -> int:
     conn.commit()
     return conn.execute("SELECT scan_attempts FROM releases WHERE id=?", (release_id,)).fetchone()[0]
 
+def scan_retries_due(conn, limit=20):
+    """Releases whose download or processing failed on an earlier scan, oldest first."""
+    return conn.execute("SELECT package, version, serial FROM releases WHERE stage='fetch_failed' "
+                        "ORDER BY serial LIMIT ?", (limit,)).fetchall()
+
 def get_stage(conn, package, version):
     row = conn.execute("SELECT stage FROM releases WHERE package=? AND version=?",
                        (package, version)).fetchone()

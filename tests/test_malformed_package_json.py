@@ -1,6 +1,6 @@
 """package.json is author-controlled. A byte-order mark, broken JSON or a wrongly-typed field must never make
-build_diff raise: a release that fails to process is retried every tick and holds the cursor, so one such
-package would stall the whole scan."""
+build_diff raise: a release that fails to process is retried and then given up on, so one such package would
+never be scanned."""
 import pytest
 
 from npmdiffwatch import differ
