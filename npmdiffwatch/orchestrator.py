@@ -190,18 +190,33 @@ def _refusal_note(reason: str) -> str:
             f"Needs manual review.")
 
 
+def _fetch_refusal_note(reason: str) -> str:
+    if reason.startswith("quarantined"):
+        return ("UNREVIEWED: not downloaded — this package is on npmdiffwatch's quarantine list (a past "
+                "compromise), so this release was not scanned. Needs manual review.")
+    why = "bigger than the download limit" if reason == "download-size" else ""
+    return (f"UNREVIEWED: npmdiffwatch refused this tarball ({reason}{': ' + why if why else ''}); it was not "
+            f"downloaded, so nothing in it was scanned. Oversized archives can hide a payload from scanners. "
+            f"Needs manual review.")
+
+
+def _alert_unscanned(cfg, conn, rid, rel, note):
+    """Never looked at, so never cleared: queue it for a human (`pending`) and say why in the alert."""
+    v = Verdict(rel.package, rel.version, "suspicious", 0.0, [], False, confidence=0.0, attack_type="none",
+                reasoning=note, cited_hunk="", recommended_action="monitor", model="none")
+    store.record_verdict(conn, rid, v)
+    notifier.emit(cfg, conn, dataclasses.replace(v, classification="suspicious-heuristic"), rid)
+
+
 def _process_fetched(cfg, conn, rvw, ruleset, rel, result, offline=False, guard=None) -> bool:
     rid = store.record_release(conn, rel.package, rel.version, rel.serial, False, None, "tgz")
     if isinstance(result, fetcher.RefusedToFetch):
         store.update_stage(conn, rid, "refused_to_fetch")
+        _alert_unscanned(cfg, conn, rid, rel, _fetch_refusal_note(str(result)))
         return True
     if isinstance(result, fetcher.RefusedToExtract):
         store.update_stage(conn, rid, "refused_to_extract")
-        # Never unpacked, so never scanned: queue it for a human (`pending`) and say why in the alert.
-        v = Verdict(rel.package, rel.version, "suspicious", 0.0, [], False, confidence=0.0, attack_type="none",
-                    reasoning=_refusal_note(str(result)), cited_hunk="", recommended_action="monitor", model="none")
-        store.record_verdict(conn, rid, v)
-        notifier.emit(cfg, conn, dataclasses.replace(v, classification="suspicious-heuristic"), rid)
+        _alert_unscanned(cfg, conn, rid, rel, _refusal_note(str(result)))
         return True
     if isinstance(result, Exception):
         logger.warning("fetch_failed for %s==%s; will retry next tick", rel.package, rel.version)
@@ -411,6 +426,8 @@ def list_pending(cfg: Config):
         diff_text, err = stored, None
         if row["stage"] == "refused_to_extract":
             err = "tarball refused, not unpacked (see reason); inspect it by hand"
+        elif row["stage"] == "refused_to_fetch":
+            err = "tarball refused, not downloaded (see reason); inspect it by hand"
         elif not stored:
             try:
                 art = fetcher.fetch_artifacts(cfg, NewRelease(row["package"], row["version"], row["serial"]))
