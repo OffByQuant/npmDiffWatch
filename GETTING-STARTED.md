@@ -334,13 +334,17 @@ larger `max_input_chars`. `pending` shows the queue counts; the dashboard shows 
 A release with **no** reviewable text at all (only binary / oversized-member / ownership signals) is not
 queued: no model can review it, so it goes straight to `pending` for a human.
 
-**When a release can't be scanned.** Two cases are made visible rather than dropped:
+**When a release can't be scanned.** These cases are made visible rather than dropped:
 
 - **Refused tarball.** A tarball over the size limits, with a file path that escapes the package, or that
   isn't a readable gzip is never unpacked. It still raises an alert marked
   `UNREVIEWED: npmdiffwatch refused to unpack this tarball (<reason>) … Needs manual review.` and goes to
   `pending`. Oversized or malformed archives are a known way to hide a payload from scanners, so treat
   these as a cue to look deeper.
+- **Refused download.** A tarball bigger than `max_download_bytes` (50 MB), or a new release of a package on
+  the built-in quarantine list, is never downloaded. It alerts the same way (`… it was not downloaded …` or
+  `… on npmdiffwatch's quarantine list …`) and goes to `pending`. The quarantine alert doesn't call the
+  release malicious: it says the package had a past compromise.
 - **Package metadata that fails to download** (a timeout or a registry error; a package deleted from npm
   is simply skipped) is retried on the next scans. After 4 attempts the release is given up on, and
   `pending` says so: `package metadata failed to download: 2 release(s) being retried, 1 given up on
@@ -636,7 +640,7 @@ Each alert names how it was reached:
 |---|---|
 | `malicious` with a `model=` name | the reviewer's verdict; `cited_hunk` is the code it rests on. The model's `suspicious` calls go to `pending` instead |
 | `suspicious-heuristic` with a score | the rules fired and no model reviewed it (heuristic-only mode, §10) |
-| `suspicious-heuristic` with `UNREVIEWED: …` | nothing could be shown to a model: a refused tarball (§5), or flagged content with no reviewable text. Needs manual review |
+| `suspicious-heuristic` with `UNREVIEWED: …` | nothing could be shown to a model: a tarball refused at download or unpack (§5), or flagged content with no reviewable text. Needs manual review |
 
 ---
 

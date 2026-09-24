@@ -28,8 +28,8 @@ State lives in a local SQLite database; nothing is hosted, and nothing leaves yo
 calls to the npm registry and the model endpoint you point it at.
 
 Every alert says how it was reached: a **model verdict** with the code it cites; a **heuristic alert**
-when you run without a model; or **UNREVIEWED — needs manual review** when the tool refused to unpack a
-tarball (oversized or malformed archives can hide a payload), with the reason.
+when you run without a model; or **UNREVIEWED — needs manual review** when the tool refused to download or
+unpack a tarball (oversized or malformed archives can hide a payload), with the reason.
 
 ---
 
