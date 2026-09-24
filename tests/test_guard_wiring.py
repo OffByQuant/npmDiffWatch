@@ -149,3 +149,18 @@ def test_guard_status_reads_stored_stats(tmp_path):
     conn.close()
     st = orchestrator.guard_status(cfg)
     assert st["state"] == "degraded" and st["tok_s"] == 85.0 and st["cap_chars"] < 60_000
+
+
+def test_chars_per_token_counts_the_system_prompt_too(tmp_path):
+    """The server's prompt_tokens include the system prompt, so the chars measured against it must too;
+    otherwise chars/token reads ~1.8 instead of ~3.4 on real reviews (seen live on Gemma)."""
+    class _Sized(Backend):
+        def complete(self, **kw):
+            self.last_usage = {"prompt_tokens": round((len(kw["system"]) + len(kw["user_text"])) / 3.4),
+                               "completion_tokens": 50}
+            return _OK
+    be = _Sized()
+    cfg, conn, gd, rvw = _setup(tmp_path, be)
+    rid = store.record_release(conn, "a", "1.0.0", 1, False, None, "tgz")
+    orchestrator._review_escalated(cfg, conn, rvw, _diff("a", "x" * 20_000), _T, rid, guard=gd)
+    assert 3.3 < gd.cpt < 3.5

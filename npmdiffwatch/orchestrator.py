@@ -80,7 +80,9 @@ def _attempt_review(cfg, conn, rvw, rid, package, version, score, fired_rules, t
             return False
         return True
     if guard is not None:
-        guard.record_success(getattr(rvw.backend, "last_usage", None), time.monotonic() - t0, len(text))
+        # prompt_tokens cover the system prompt as well as the package content, so the chars must too.
+        guard.record_success(getattr(rvw.backend, "last_usage", None), time.monotonic() - t0,
+                             len(reviewer.SYSTEM_PROMPT) + len(text))
     _record(cfg, conn, rid, verdict, score)
     return True
 
