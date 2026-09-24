@@ -45,3 +45,46 @@ def test_watch_stops_on_keyboard_interrupt(tmp_path, monkeypatch):
     monkeypatch.setattr(orchestrator, "export_dashboard", lambda *a, **k: None)
     n = orchestrator.watch(cfg, interval=0, iterations=None, sleep_fn=lambda s: None)
     assert n == 0  # interrupted mid-tick, returns cleanly
+
+
+def _advancing_run(cfg, step):
+    """A scan tick that moves the cursor `step` changes forward, like a real tick with work to do."""
+    from npmdiffwatch import store
+    def fake_run(c, **k):
+        conn = store.connect(c); store.init_schema(conn)
+        store.set_last_serial(conn, store.get_last_serial(conn) + step); conn.close()
+    return fake_run
+
+
+def test_watch_skips_the_sleep_while_a_full_page_is_still_waiting(tmp_path, monkeypatch):
+    from npmdiffwatch import ingest
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(orchestrator, "run_once", _advancing_run(cfg, 200))
+    monkeypatch.setattr(orchestrator, "export_dashboard", lambda *a, **k: None)
+    monkeypatch.setattr(ingest, "current_serial", lambda c: 100_000)     # far ahead: still behind
+    slept = []
+    orchestrator.watch(cfg, interval=300, iterations=3, sleep_fn=slept.append)
+    assert slept == []
+
+
+def test_watch_sleeps_once_caught_up(tmp_path, monkeypatch):
+    from npmdiffwatch import ingest
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(orchestrator, "run_once", _advancing_run(cfg, 200))
+    monkeypatch.setattr(orchestrator, "export_dashboard", lambda *a, **k: None)
+    monkeypatch.setattr(ingest, "current_serial", lambda c: 250)        # less than a page left after tick 1
+    slept = []
+    orchestrator.watch(cfg, interval=300, iterations=2, sleep_fn=slept.append)
+    assert slept == [300]
+
+
+def test_watch_sleeps_when_the_cursor_is_pinned_even_if_behind(tmp_path, monkeypatch):
+    # A release that keeps failing to fetch pins the cursor: retrying it back-to-back would hammer npm.
+    from npmdiffwatch import ingest
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(orchestrator, "run_once", _advancing_run(cfg, 0))
+    monkeypatch.setattr(orchestrator, "export_dashboard", lambda *a, **k: None)
+    monkeypatch.setattr(ingest, "current_serial", lambda c: 100_000)
+    slept = []
+    orchestrator.watch(cfg, interval=300, iterations=2, sleep_fn=slept.append)
+    assert slept == [300]
