@@ -271,12 +271,21 @@ npmdiffwatch -c npmdiffwatch.toml capture-evidence --release-id <id>
 npmdiffwatch -c npmdiffwatch.toml capture-evidence --all           # widen to every fired-rule row (more re-fetches)
 ```
 
-**Keeping the database small.** Older versions stored npm's full metadata document (packument) for
-every release — up to 65 MB each, never read — which grew a busy database by ~0.5 GB/hour. It is no longer
-stored. For a database created before this change:
+**Keeping the database small.** `run` and `watch` prune the database by themselves at most once every
+`prune_every_hours` (24). Pruning keeps everything a person may act on (verdicts, alerts, the review
+queues and their evidence) and:
+
+- compresses stored evidence (about 5× smaller) and drops it for releases reviewed benign or never
+  escalated to the reviewer;
+- deletes plain release rows older than `retention_days` (90; `0` keeps everything), except each
+  package's newest release, which later diffs rely on;
+- clears npm metadata documents stored by older versions (up to 65 MB each, never read), then compacts
+  the file.
+
+On a 9-hour live run this took the database from 42 MB to 17 MB. To prune right away:
 
 ```bash
-npmdiffwatch -c npmdiffwatch.toml prune     # clear stored packuments and compact; verdicts and evidence stay
+npmdiffwatch -c npmdiffwatch.toml prune
 ```
 
 No package tarballs are ever written to disk: they are downloaded and extracted in memory only.

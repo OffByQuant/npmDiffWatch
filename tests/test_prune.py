@@ -49,6 +49,7 @@ def test_prune_clears_packuments_keeps_findings_and_shrinks_the_file(tmp_path):
 
     conn = store.connect(cfg)
     assert conn.execute("SELECT count(*) FROM releases WHERE packument_json IS NOT NULL").fetchone()[0] == 0
-    assert conn.execute("SELECT count(*) FROM releases WHERE evidence='ev'").fetchone()[0] == 20
+    ids = [r[0] for r in conn.execute("SELECT id FROM releases")]
+    assert [store.get_evidence(conn, i) for i in ids] == ["ev"] * 20     # kept, now compressed
     assert store.review_input(store.pending_reviews(conn)[0]).endswith("code\nM")
     assert cfg.db_path.stat().st_size < before / 5 and freed > 0

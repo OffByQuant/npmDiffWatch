@@ -4,6 +4,7 @@ import fcntl
 import json
 import logging
 import os
+import sqlite3
 import time
 from concurrent.futures import ThreadPoolExecutor
 
@@ -61,6 +62,7 @@ def _record(cfg, conn, rid, verdict, score):
     store.clear_pending(conn, rid)
     store.record_verdict(conn, rid, verdict)
     if verdict.classification == "benign":
+        store.clear_evidence(conn, rid)          # kept only for releases a person may act on
         store.update_stage(conn, rid, "reviewed", score, None)
     elif verdict.classification == "suspicious":
         store.update_stage(conn, rid, "needs_adjudication", score, None)
@@ -226,8 +228,8 @@ def _process_fetched(cfg, conn, rvw, ruleset, rel, result, offline=False, guard=
         tr = engine.triage(d, cfg, ruleset, {"current": result.maintainer_metadata, "prior": prior_meta})
         store.update_stage(conn, rid, "triaged", tr.score,
                            json.dumps([r.__dict__ for r in tr.fired_rules]))
-        ev = reviewer.build_evidence(d, tr, max_chars=cfg.evidence_max_chars)
-        if ev:
+        ev = reviewer.build_evidence(d, tr, max_chars=cfg.evidence_max_chars) if tr.escalate else None
+        if ev:      # below the review threshold nobody acts on the release, so its code isn't kept
             store.update_evidence(conn, rid, ev)
         if tr.escalate:
             _review_escalated(cfg, conn, rvw, d, tr, rid, offline=offline, guard=guard)
@@ -338,6 +340,10 @@ def run_once(cfg: Config, *, seed_if_fresh: bool = True, recent: int | None = No
         if not blocked:
             advance_to = max(advance_to, page.watermark)
         store.set_last_serial(conn, advance_to)
+        try:
+            store.maybe_prune(conn, cfg.retention_days, cfg.prune_every_hours * 3600, time.time())
+        except sqlite3.Error:
+            logger.exception("automatic prune failed; scanning continues")
         return len(releases)
     finally:
         fcntl.flock(lock, fcntl.LOCK_UN); lock.close()
@@ -370,7 +376,7 @@ def prune(cfg: Config) -> int:
     before = size()
     conn = store.connect(cfg); store.init_schema(conn)
     try:
-        store.prune(conn)
+        store.prune(conn, cfg.retention_days)
     finally:
         conn.close()
     return before - size()
@@ -397,7 +403,7 @@ def list_pending(cfg: Config):
     ruleset = _load_ruleset(cfg)
     items = []
     for row in store.pending_adjudication(conn):
-        stored = row["evidence"]
+        stored = store.evidence_text(row["evidence"])
         diff_text, err = stored, None
         if row["stage"] == "refused_to_extract":
             err = "tarball refused, not unpacked (see reason); inspect it by hand"
