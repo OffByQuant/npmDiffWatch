@@ -56,6 +56,8 @@ class Config:
     evidence_max_chars: int = 200_000
     retention_days: int = 90          # plain release rows older than this are pruned (0 = keep all)
     prune_every_hours: float = 24.0   # run/watch prune the database at most this often
+    watchlist: str | None = None          # watch only these packages (names file, package-lock, CycloneDX, SPDX)
+    watchlist_baseline_per_tick: int = 50  # listed packages whose latest release is reviewed per tick at start
     reviewer_enabled: bool = True
     rules_dir: Path = Path("rules/community")
     top_npm_path: Path = None
@@ -63,10 +65,7 @@ class Config:
 
 
 def load_config(path) -> Config:
-    path = Path(path)
-    if not path.exists():
-        return Config()
-    raw = tomllib.loads(path.read_text())
+    raw = tomllib.loads(Path(path).read_text())
     rv = raw.pop("reviewer", {})
     default_rv = ReviewerConfig()
     reviewer = replace(default_rv, **{k: v for k, v in rv.items() if hasattr(default_rv, k)})

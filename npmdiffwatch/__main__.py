@@ -1,5 +1,6 @@
 import argparse
 import dataclasses
+import sys
 from . import egress, store
 from .config import Config, load_config
 from .orchestrator import (run_once, seed_now, list_pending, adjudicate, get_evidence,
@@ -9,12 +10,33 @@ from .guard import describe
 
 
 def _cfg(args):
-    cfg = load_config(args.config) if args.config else Config()
+    try:
+        cfg = load_config(args.config) if args.config else Config()
+    except FileNotFoundError:
+        # Never fall back to the built-in defaults here: they point at the default database.
+        print(f"npmdiffwatch: config file not found: {args.config}", file=sys.stderr)
+        sys.exit(2)
     if args.model or args.endpoint:       # an OpenAI-compatible server (llama.cpp, llama-swap, Ollama, vLLM)
         rc = dataclasses.replace(cfg.reviewer, provider="openai", model=args.model or cfg.reviewer.model,
                                  base_url=args.endpoint or cfg.reviewer.base_url)
         cfg = dataclasses.replace(cfg, reviewer=rc, reviewer_enabled=True)
+    if getattr(args, "watchlist", None):
+        cfg = dataclasses.replace(cfg, watchlist=args.watchlist)
     return cfg
+
+
+def _watchlist_or_exit(cfg):
+    if not cfg.watchlist:
+        return None
+    from .orchestrator import WatchlistFile
+    from .watchlist import WatchlistError
+    try:
+        wf = WatchlistFile(cfg.watchlist)
+    except WatchlistError as e:
+        print(f"[npmdiffwatch] {e}"); sys.exit(2)
+    print(f"[npmdiffwatch] watchlist: {wf.current().describe()}"
+          + (f" ({wf.current().skipped} invalid entries skipped)" if wf.current().skipped else ""))
+    return wf
 
 
 def _reach(host):
@@ -48,12 +70,17 @@ def main():
     runp.add_argument("--backfill", action="store_true",
                       help="process from the cursor as-is (npm genesis on a fresh DB) instead of "
                            "seeding a fresh cursor to now")
+    runp.add_argument("--watchlist", default=None, metavar="PATH",
+                      help="scan only these packages: a names file (name or @scope/* per line), "
+                           "package-lock.json, or a CycloneDX / SPDX JSON SBOM")
     runp.add_argument("--recent", type=int, default=None, metavar="N",
                       help="on a fresh database, start N npm changes back instead of now")
     sub.add_parser("seed-now",
                    help="set the cursor to now and exit (start monitoring from now)")
-    sub.add_parser("pending",
-                   help="list suspicious verdicts awaiting adjudication, each with its diff")
+    pendp = sub.add_parser("pending",
+                           help="list suspicious verdicts awaiting adjudication, each with its diff")
+    pendp.add_argument("--watchlist", default=None, metavar="PATH",
+                       help="also show this watchlist and its startup-review progress")
     sub.add_parser("prune", help="shrink the database now (run/watch also do it daily): compress evidence, drop "
                                  "it for benign releases, apply retention_days, compact; findings and queues stay")
     rpp = sub.add_parser("review-pending",
@@ -94,6 +121,9 @@ def main():
     wp.add_argument("--interval", type=int, default=300,
                     help="seconds between scans (default: 300)")
     wp.add_argument("--out", default=None, help="dashboard HTML path (default: <db dir>/dashboard.html)")
+    wp.add_argument("--watchlist", default=None, metavar="PATH",
+                    help="scan only these packages: a names file (name or @scope/* per line), "
+                         "package-lock.json, or a CycloneDX / SPDX JSON SBOM")
     wp.add_argument("--recent", type=int, default=None, metavar="N",
                     help="on a fresh database, start N npm changes back instead of now, so the dashboard "
                          "fills within minutes (ignored once scanning has started)")
@@ -107,7 +137,8 @@ def main():
     cfg = _cfg(args)
     egress.install_guard(cfg)
     if args.cmd == "run":
-        n = run_once(cfg, seed_if_fresh=not args.backfill, recent=args.recent)
+        wf = _watchlist_or_exit(cfg)
+        n = run_once(cfg, seed_if_fresh=not args.backfill, recent=args.recent, watch=wf.current() if wf else None)
         print(f"[npmdiffwatch] processed {n} releases")
     elif args.cmd == "seed-now":
         s = seed_now(cfg)
@@ -123,6 +154,14 @@ def main():
         gs = guard_status(cfg)
         if gs:
             print(f"[npmdiffwatch] reviewer: {describe(gs)}")
+        if cfg.watchlist:
+            from .orchestrator import WatchlistFile, baseline_status
+            from .watchlist import WatchlistError
+            try:
+                s = baseline_status(cfg, WatchlistFile(cfg.watchlist).current())
+                print(f"[npmdiffwatch] watchlist: {s['describe']} · baseline {s['done']:,}/{s['total']:,}")
+            except WatchlistError as e:
+                print(f"[npmdiffwatch] {e}")
         fr = feed_retry_counts(cfg)
         if fr["retrying"] or fr["gave_up"]:
             print(f"[npmdiffwatch] package metadata failed to download: {fr['retrying']} release(s) being retried, "
@@ -177,6 +216,7 @@ def main():
             finally:
                 httpd.server_close()
     elif args.cmd == "watch":
+        wf = _watchlist_or_exit(cfg)        # stop before serving anything if the list is unusable
         out = export_dashboard(cfg, out_path=args.out)  # initial snapshot for the server
         httpd = None
         if args.serve:
@@ -185,7 +225,7 @@ def main():
             threading.Thread(target=httpd.serve_forever, daemon=True).start()
             print(f"[npmdiffwatch] serving http://{args.host}:{args.port}/{out.name} ({_reach(args.host)})")
         print(f"[npmdiffwatch] watching — scanning every {args.interval}s, Ctrl-C to stop")
-        n = watch(cfg, interval=args.interval, out_path=args.out, recent=args.recent)
+        n = watch(cfg, interval=args.interval, out_path=args.out, recent=args.recent, watchlist=wf)
         if httpd:
             httpd.server_close()
         print(f"\n[npmdiffwatch] stopped after {n} scan(s)")

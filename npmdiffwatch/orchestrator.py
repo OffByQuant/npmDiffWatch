@@ -6,10 +6,12 @@ import logging
 import os
 import sqlite3
 import time
+from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 
 from . import ingest, fetcher, differ, engine, rules, notifier, store, reviewer, egress, dashboard
 from . import guard as guard_mod
+from . import watchlist as watchlist_mod
 from .config import Config
 from .models import Verdict, NewRelease, FiredRule
 
@@ -165,9 +167,9 @@ def drain_pending(cfg, conn, rvw, *, auto: bool, reasons=None, limit=None, guard
     return done
 
 
-def _fetch_one(cfg, rel):
+def _fetch_one(cfg, rel, meta=None):
     try:
-        return fetcher.fetch_artifacts(cfg, rel)
+        return fetcher.fetch_artifacts(cfg, rel, meta)
     except Exception as e:
         return e
 
@@ -248,7 +250,7 @@ def seed_now(cfg: Config):
     return s
 
 
-def run_once(cfg: Config, *, seed_if_fresh: bool = True, recent: int | None = None) -> int:
+def run_once(cfg: Config, *, seed_if_fresh: bool = True, recent: int | None = None, watch=None) -> int:
     if not egress.is_installed():
         logger.warning("egress guard not installed; this process has no in-process host allowlist "
                        "(see docs/hardening/egress-allowlist.md or call egress.install_guard(cfg))")
@@ -314,7 +316,9 @@ def run_once(cfg: Config, *, seed_if_fresh: bool = True, recent: int | None = No
                 guard = guard_mod.ReviewerGuard(cfg, rvw.backend, conn)
                 guard.begin_batch()
                 drain_pending(cfg, conn, rvw, auto=True, limit=cfg.reviewer.max_pending_per_tick, guard=guard)
-        page = ingest.changes_since(cfg, last, conn, limit=cfg.max_releases_per_run)
+        if watch is not None:
+            _baseline_step(cfg, conn, rvw, ruleset, watch, offline, guard)
+        page = ingest.changes_since(cfg, last, conn, limit=cfg.max_releases_per_run, watch=watch)
         releases = page.releases
         prepared = [(rel, store.get_stage(conn, rel.package, rel.version)) for rel in releases]
 
@@ -455,7 +459,86 @@ def _behind(cfg, before: int) -> bool:
     return head is not None and head - after >= cfg.max_releases_per_run
 
 
-def watch(cfg: Config, interval: int = 300, out_path=None, iterations=None, sleep_fn=None, recent=None):
+class WatchlistFile:
+    """The watchlist, re-read when the file changes. A failed re-read keeps the last good list."""
+    def __init__(self, path):
+        self.path = Path(path)
+        self._list = watchlist_mod.load(self.path)
+        self._mtime = self.path.stat().st_mtime
+
+    def current(self):
+        try:
+            mtime = self.path.stat().st_mtime
+            if mtime != self._mtime:
+                self._list, self._mtime = watchlist_mod.load(self.path), mtime
+        except (OSError, watchlist_mod.WatchlistError) as e:
+            msg = f"[npmdiffwatch] WARNING: watchlist {self.path} could not be re-read ({e}); keeping the last good list"
+            print(msg, flush=True); logger.warning(msg)
+        return self._list
+
+
+def _baseline_meta(cfg, name):
+    return name, fetcher._packument(name, cfg)
+
+
+def _baseline_step(cfg, conn, rvw, ruleset, watch, offline, guard):
+    """Review the latest release of up to watchlist_baseline_per_tick listed packages not yet baselined.
+    Downloads run fetch_concurrency at a time, in windows, so at most that many packuments and tarball pairs
+    are in memory at once; each packument is fetched once and handed to the tarball fetch. Database work stays
+    on this thread. Baseline releases use the current cursor as serial and never move it."""
+    serial = store.get_last_serial(conn)
+    W = max(1, cfg.fetch_concurrency)
+    pending = store.baseline_pending(conn, watch.names, cfg.watchlist_baseline_per_tick)
+    with ThreadPoolExecutor(max_workers=W) as ex:
+        for start in range(0, len(pending), W):
+            todo = []
+            for name, meta in ex.map(lambda n: _baseline_meta(cfg, n), pending[start:start + W]):
+                if meta is None:
+                    store.mark_baseline(conn, name, "not_found"); continue
+                if meta == {}:
+                    _baseline_failed(conn, name); continue
+                latest = (meta.get("dist-tags") or {}).get("latest")
+                if not latest or latest not in (meta.get("versions") or {}):
+                    store.mark_baseline(conn, name, "no_versions"); continue
+                if store.get_stage(conn, name, latest) in TERMINAL:
+                    store.mark_baseline(conn, name, "scanned"); continue
+                todo.append((NewRelease(name, latest, serial), meta))
+            results = ex.map(lambda rm: _fetch_one(cfg, rm[0], rm[1]), todo)
+            for (rel, _), result in zip(todo, results):
+                if _process_fetched(cfg, conn, rvw, ruleset, rel, result, offline, guard):
+                    store.mark_baseline(conn, rel.package, "scanned")
+                else:
+                    _baseline_failed(conn, rel.package)
+    d, t = store.baseline_counts(conn, watch.names)
+    if d < t:
+        print(f"[npmdiffwatch] watchlist baseline: {d:,}/{t:,} packages", flush=True)
+
+
+def _baseline_failed(conn, name):
+    if store.mark_baseline(conn, name, "fetch_failed") == "gave_up":
+        msg = (f"[npmdiffwatch] WARNING: watchlist baseline gave up on {name} after {1 + store.FEED_RETRIES} "
+               f"failed downloads; its new releases are still watched")
+        print(msg, flush=True); logger.warning(msg)
+
+
+def baseline_status(cfg, wl) -> dict:
+    conn = store.connect(cfg); store.init_schema(conn)
+    try:
+        d, t = store.baseline_counts(conn, wl.names)
+    finally:
+        conn.close()
+    return {"describe": wl.describe(), "done": d, "total": t}
+
+
+def _baseline_incomplete(cfg, wl) -> bool:
+    if wl is None or not wl.names:
+        return False
+    s = baseline_status(cfg, wl)
+    return s["done"] < s["total"]
+
+
+def watch(cfg: Config, interval: int = 300, out_path=None, iterations=None, sleep_fn=None, recent=None,
+          watchlist=None):
     """Daemon loop: scan one tick, refresh the dashboard, sleep, repeat until Ctrl-C. While a backlog is
     waiting (a --recent start, or a restart after downtime) the next tick starts at once instead.
     A failed scan is logged and skipped (the daemon stays up); the dashboard is
@@ -467,15 +550,16 @@ def watch(cfg: Config, interval: int = 300, out_path=None, iterations=None, slee
     try:
         while iterations is None or n < iterations:
             before = _cursor(cfg)
+            wl = watchlist.current() if watchlist else None
             try:
-                run_once(cfg, recent=recent)
+                run_once(cfg, recent=recent, watch=wl)
             except Exception:
                 logger.exception("watch: scan tick failed; daemon continuing")
             export_dashboard(cfg, out_path=out_path)
             n += 1
             if iterations is not None and n >= iterations:
                 break
-            if not _behind(cfg, before):
+            if not _behind(cfg, before) and not _baseline_incomplete(cfg, wl):
                 sleep_fn(interval)
     except KeyboardInterrupt:
         pass
@@ -526,6 +610,15 @@ def guard_status(cfg: Config):
         conn.close()
 
 
+def _watchlist_status(cfg):
+    if not cfg.watchlist:
+        return None
+    try:
+        return baseline_status(cfg, watchlist_mod.load(cfg.watchlist))
+    except watchlist_mod.WatchlistError:
+        return None
+
+
 def export_dashboard(cfg: Config, out_path=None, generated_at: str = ""):
     from pathlib import Path
     out = Path(out_path) if out_path else cfg.db_path.parent / "dashboard.html"
@@ -546,6 +639,7 @@ def export_dashboard(cfg: Config, out_path=None, generated_at: str = ""):
         "flagged_total": sum(1 for r in rows if (r.get("classification") or "").lower() in _FLAGGED),
         "reviewer": reviewer_label, "model_reachable": reachable, "pending_review": pending_review,
         "guard": guard_status(cfg),
+        "watchlist": _watchlist_status(cfg),
     }
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(dashboard.render_dashboard(rows, status=status, generated_at=generated_at))

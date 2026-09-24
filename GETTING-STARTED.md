@@ -407,6 +407,42 @@ It is a **foreground** process — keep the terminal open, or run it under your 
 it as a background task and hand you back the dashboard URL. For unattended, machine-level scheduling,
 prefer the harness patterns in §7.
 
+### Watch only your packages
+
+By default NpmDiffWatch scans every release published to npm. To watch only the packages you care about,
+pass `--watchlist PATH` to `watch` or `run` (or set `watchlist = "PATH"` in the config; the flag wins):
+
+```bash
+npmdiffwatch -c npmdiffwatch.toml watch --serve --watchlist package-lock.json
+```
+
+The format is detected from the file's content:
+
+| Format | Packages taken |
+|---|---|
+| Names file (text) | one per line: an exact name (`left-pad`, `@babel/core`) or a pattern with `*` (`@gooddata/*`, `react-*`); `#` comments ignored. See `examples/watchlist.txt` |
+| `package-lock.json` / `npm-shrinkwrap.json` | every package in the tree, direct and transitive (lockfile v1, v2 and v3); workspace links are skipped |
+| CycloneDX JSON | components with a `pkg:npm/...` purl, including nested components |
+| SPDX JSON | packages with a `pkg:npm/...` purl external reference |
+
+What happens:
+
+- **On start**, each listed package's latest release is reviewed against its previous one, 50 packages per
+  scan (`watchlist_baseline_per_tick`), with progress printed (`watchlist baseline: 120/560 packages`).
+  It happens once per package and resumes after a restart; `watch` doesn't sleep until it's done.
+- **After that**, only new releases of listed packages are fetched and reviewed. Feed rows for other
+  packages are dropped before anything is downloaded, so a watchlist run keeps up with npm.
+- **Patterns** match new releases only: a family like `@gooddata/*` can't be listed at start without a
+  search API, so the startup review covers exact names.
+- **The file is re-read** whenever it changes, so updating your lockfile updates the watch. If a re-read
+  fails (say, mid-save), the last good list stays in force and each scan prints a warning.
+- **A missing, empty or unrecognized file stops the run** with a message; it never falls back to scanning
+  everything or nothing. The file is parsed as data only; nothing in it is executed.
+- `pending` and the dashboard show the list and the startup progress, e.g.
+  `watchlist: package-lock.json · 560 packages · baseline 560/560`.
+
+yarn.lock and pnpm-lock.yaml aren't read directly; generate a CycloneDX SBOM from them instead.
+
 ---
 
 ## 7. Running on a harness (cron / systemd / Docker / CI)

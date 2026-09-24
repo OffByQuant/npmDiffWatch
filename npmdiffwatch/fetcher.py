@@ -278,11 +278,11 @@ def _maintainer_metadata(meta: dict) -> dict:
     }
 
 
-def fetch_artifacts(cfg, rel: NewRelease) -> ArtifactSet | None:
+def fetch_artifacts(cfg, rel: NewRelease, meta: dict | None = None) -> ArtifactSet | None:
     if quarantine.is_quarantined(rel.package):
         raise RefusedToFetch(f"quarantined: {rel.package}")
 
-    meta = _packument(rel.package, cfg)
+    meta = meta if meta is not None else _packument(rel.package, cfg)
     if meta == {}:        # a failed download, not a missing package: retry, don't mark it "nothing to scan"
         raise MetadataUnavailable(f"could not download package metadata for {rel.package}")
     if not meta or "versions" not in meta:
