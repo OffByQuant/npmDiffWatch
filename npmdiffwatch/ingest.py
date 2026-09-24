@@ -97,7 +97,7 @@ def _newest_unseen_version(packument: dict | None, package: str, conn) -> str | 
     return latest if latest in unseen else unseen[0]
 
 
-def changes_since(cfg: Config, since_serial: int, conn=None, *, limit: int | None = None) -> ChangesPage:
+def changes_since(cfg: Config, since_serial: int, conn=None, *, limit: int | None = None, watch=None) -> ChangesPage:
     limit = limit or cfg.max_releases_per_run
     data = _fetch_json(_changes_url(cfg, since_serial, limit), cfg)
     watermark = since_serial
@@ -116,11 +116,14 @@ def changes_since(cfg: Config, since_serial: int, conn=None, *, limit: int | Non
         name = row.get("id")
         if not name or not isinstance(seq, int):
             continue
+        if watch is not None and not watch.matches(name):
+            continue          # watchlist mode: never download anything for an unlisted package
         rows.append((name, seq))
         page_names.add(name)
     if conn is not None:
         # Packages whose metadata failed to download on an earlier tick. The page may already carry them.
-        rows += [(r["package"], since_serial) for r in store.feed_retries_due(conn) if r["package"] not in page_names]
+        rows += [(r["package"], since_serial) for r in store.feed_retries_due(conn)
+                 if r["package"] not in page_names and (watch is None or watch.matches(r["package"]))]
 
     # Packument fetches dominate a tick (~1s each); run them concurrently. Version resolution reads
     # the DB, so it stays on this thread. Each packument is resolved and dropped as it arrives rather
