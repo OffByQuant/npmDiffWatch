@@ -276,6 +276,7 @@ class DiffFacts:
     package_json_changes: frozenset = frozenset()
     changed_scripts: frozenset = frozenset()
     lock_meta: dict = None
+    changed_script_text: str = ""
 
 
 def _file_facts(fd) -> FileFacts:
@@ -332,4 +333,5 @@ def build_facts(diff, maintainer_context=None) -> DiffFacts:
     lock_meta = getattr(diff, "_lock_meta", {})
     return DiffFacts(files, _normalize_binaries(diff.added_binaries),
                      tuple(diff.added_dep_findings), maint, publisher_changed,
-                     low_footprint, pkg_fields, changed_scripts, lock_meta)
+                     low_footprint, pkg_fields, changed_scripts, lock_meta,
+                     getattr(diff, "_changed_script_text", ""))

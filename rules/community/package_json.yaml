@@ -36,3 +36,33 @@
   match:
     any:
       - pkg_field_changed: "dependencies"
+
+- id: pkg-install-script-dangerous
+  description: An added/changed preinstall/install/postinstall script pipes into a shell, opens a network shell, decodes a payload, reads cloud metadata, or calls an out-of-band callback service.
+  applies_to: package_json
+  weight: 60
+  attack_type: install-hook-script
+  match:
+    any:
+      - install_script_contains:
+          - "| bash"
+          - "|bash"
+          - "| sh "
+          - "|sh "
+          - "rev |"
+          - "rev|"
+          - "/dev/tcp/"
+          - "/dev/udp/"
+          - "base64 -d"
+          - "base64 --decode"
+          - "169.254.169.254"
+          - "100.100.100.200"
+          - "169.254.0.23"
+          - "metadata.google.internal"
+          - "metadata.tencentyun.com"
+          - "nslookup "
+          - ".oast."
+          - "oastify"
+          - "burpcollaborator"
+          - "interact.sh"
+          - "dnslog"
