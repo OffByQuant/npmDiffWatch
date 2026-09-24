@@ -6,10 +6,12 @@ import logging
 import os
 import sqlite3
 import time
+from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 
 from . import ingest, fetcher, differ, engine, rules, notifier, store, reviewer, egress, dashboard
 from . import guard as guard_mod
+from . import watchlist as watchlist_mod
 from .config import Config
 from .models import Verdict, NewRelease, FiredRule
 
@@ -248,7 +250,7 @@ def seed_now(cfg: Config):
     return s
 
 
-def run_once(cfg: Config, *, seed_if_fresh: bool = True, recent: int | None = None) -> int:
+def run_once(cfg: Config, *, seed_if_fresh: bool = True, recent: int | None = None, watch=None) -> int:
     if not egress.is_installed():
         logger.warning("egress guard not installed; this process has no in-process host allowlist "
                        "(see docs/hardening/egress-allowlist.md or call egress.install_guard(cfg))")
@@ -314,7 +316,9 @@ def run_once(cfg: Config, *, seed_if_fresh: bool = True, recent: int | None = No
                 guard = guard_mod.ReviewerGuard(cfg, rvw.backend, conn)
                 guard.begin_batch()
                 drain_pending(cfg, conn, rvw, auto=True, limit=cfg.reviewer.max_pending_per_tick, guard=guard)
-        page = ingest.changes_since(cfg, last, conn, limit=cfg.max_releases_per_run)
+        if watch is not None:
+            _baseline_step(cfg, conn, rvw, ruleset, watch, offline, guard)
+        page = ingest.changes_since(cfg, last, conn, limit=cfg.max_releases_per_run, watch=watch)
         releases = page.releases
         prepared = [(rel, store.get_stage(conn, rel.package, rel.version)) for rel in releases]
 
@@ -455,7 +459,65 @@ def _behind(cfg, before: int) -> bool:
     return head is not None and head - after >= cfg.max_releases_per_run
 
 
-def watch(cfg: Config, interval: int = 300, out_path=None, iterations=None, sleep_fn=None, recent=None):
+class WatchlistFile:
+    """The watchlist, re-read when the file changes. A failed re-read keeps the last good list."""
+    def __init__(self, path):
+        self.path = Path(path)
+        self._list = watchlist_mod.load(self.path)
+        self._mtime = self.path.stat().st_mtime
+
+    def current(self):
+        try:
+            mtime = self.path.stat().st_mtime
+            if mtime != self._mtime:
+                self._list, self._mtime = watchlist_mod.load(self.path), mtime
+        except (OSError, watchlist_mod.WatchlistError) as e:
+            msg = f"[npmdiffwatch] WARNING: watchlist {self.path} could not be re-read ({e}); keeping the last good list"
+            print(msg, flush=True); logger.warning(msg)
+        return self._list
+
+
+def _baseline_step(cfg, conn, rvw, ruleset, watch, offline, guard):
+    """Review the latest release of up to watchlist_baseline_per_tick listed packages not yet baselined.
+    Their releases use the current cursor as serial and never move it."""
+    serial = store.get_last_serial(conn)
+    for name in store.baseline_pending(conn, watch.names, cfg.watchlist_baseline_per_tick):
+        meta = fetcher._packument(name, cfg)
+        if meta is None:
+            store.mark_baseline(conn, name, "not_found"); continue
+        if meta == {}:
+            store.mark_baseline(conn, name, "fetch_failed"); continue
+        latest = (meta.get("dist-tags") or {}).get("latest")
+        if not latest or latest not in (meta.get("versions") or {}):
+            store.mark_baseline(conn, name, "no_versions"); continue
+        if store.get_stage(conn, name, latest) in TERMINAL:
+            store.mark_baseline(conn, name, "scanned"); continue
+        rel = NewRelease(name, latest, serial)
+        done = _process_fetched(cfg, conn, rvw, ruleset, rel, _fetch_one(cfg, rel), offline, guard)
+        store.mark_baseline(conn, name, "scanned" if done else "fetch_failed")
+    d, t = store.baseline_counts(conn, watch.names)
+    if d < t:
+        print(f"[npmdiffwatch] watchlist baseline: {d:,}/{t:,} packages", flush=True)
+
+
+def baseline_status(cfg, wl) -> dict:
+    conn = store.connect(cfg); store.init_schema(conn)
+    try:
+        d, t = store.baseline_counts(conn, wl.names)
+    finally:
+        conn.close()
+    return {"describe": wl.describe(), "done": d, "total": t}
+
+
+def _baseline_incomplete(cfg, wl) -> bool:
+    if wl is None or not wl.names:
+        return False
+    s = baseline_status(cfg, wl)
+    return s["done"] < s["total"]
+
+
+def watch(cfg: Config, interval: int = 300, out_path=None, iterations=None, sleep_fn=None, recent=None,
+          watchlist=None):
     """Daemon loop: scan one tick, refresh the dashboard, sleep, repeat until Ctrl-C. While a backlog is
     waiting (a --recent start, or a restart after downtime) the next tick starts at once instead.
     A failed scan is logged and skipped (the daemon stays up); the dashboard is
@@ -467,15 +529,16 @@ def watch(cfg: Config, interval: int = 300, out_path=None, iterations=None, slee
     try:
         while iterations is None or n < iterations:
             before = _cursor(cfg)
+            wl = watchlist.current() if watchlist else None
             try:
-                run_once(cfg, recent=recent)
+                run_once(cfg, recent=recent, watch=wl)
             except Exception:
                 logger.exception("watch: scan tick failed; daemon continuing")
             export_dashboard(cfg, out_path=out_path)
             n += 1
             if iterations is not None and n >= iterations:
                 break
-            if not _behind(cfg, before):
+            if not _behind(cfg, before) and not _baseline_incomplete(cfg, wl):
                 sleep_fn(interval)
     except KeyboardInterrupt:
         pass
