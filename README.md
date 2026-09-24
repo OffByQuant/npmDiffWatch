@@ -86,6 +86,16 @@ npmdiffwatch -c npmdiffwatch.toml pending        # suspicious releases awaiting 
 npmdiffwatch -c npmdiffwatch.toml review-pending # review what the LLM couldn't (e.g. with a bigger model)
 ```
 
+Only care about what you depend on? Point it at your lockfile, an SBOM, or a list of names:
+
+```bash
+npmdiffwatch --model qwen-singleshot watch --serve --watchlist path/to/package-lock.json
+```
+
+It reviews each listed package's latest release once, then only new releases of those packages. Unlisted
+packages are skipped before anything is downloaded, so a watchlist run keeps up with npm easily
+([details](GETTING-STARTED.md#watch-only-your-packages)).
+
 You can also run with **no model at all** (rules-only heuristic alerts) when you have no GPU or budget.
 
 **→ Full setup — endpoints, API keys, scheduling, the dashboard, heuristic-only mode, troubleshooting:

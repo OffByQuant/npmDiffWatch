@@ -1,0 +1,5 @@
+# One package per line; * patterns match a family. Or point --watchlist at a
+# package-lock.json or a CycloneDX / SPDX JSON SBOM instead.
+left-pad
+@babel/core
+@gooddata/*
