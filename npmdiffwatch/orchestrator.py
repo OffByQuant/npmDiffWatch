@@ -18,7 +18,7 @@ from .models import Verdict, NewRelease, FiredRule
 logger = logging.getLogger(__name__)
 
 TERMINAL = {"triaged", "alerted", "reviewed", "new_package_skipped", "needs_adjudication",
-            "refused_to_extract", "no_sdist", "refused_to_fetch", "pending_review"}
+            "refused_to_extract", "no_sdist", "refused_to_fetch", "pending_review", "scan_failed"}
 
 
 def _load_ruleset(cfg):
@@ -167,6 +167,34 @@ def drain_pending(cfg, conn, rvw, *, auto: bool, reasons=None, limit=None, guard
     return done
 
 
+def _attempt_cfg(cfg, failed: int):
+    """Each retry of a failed download gets a longer deadline (like the LLM review retries): x2, x3, x4."""
+    if not failed:
+        return cfg
+    n = failed + 1
+    return dataclasses.replace(cfg, fetch_deadline_s=cfg.fetch_deadline_s * n,
+                               packument_deadline_s=cfg.packument_deadline_s * n)
+
+
+def _scan_failed(cfg, conn, rid, rel, err) -> bool:
+    """A failed download or processing attempt. Retried on the next scans (the release holds the cursor while
+    it waits); after the first try and store.FEED_RETRIES retries it is given up on visibly, so one release
+    that always fails can't stall the scan. Returns whether the release is done."""
+    why = f"{type(err).__name__}: {err}"
+    n = store.bump_scan_attempts(conn, rid)
+    if n <= store.FEED_RETRIES:
+        logger.warning("fetch_failed for %s==%s (%s); will retry next tick (attempt %d of %d)",
+                       rel.package, rel.version, why, n, store.FEED_RETRIES + 1)
+        store.update_stage(conn, rid, "fetch_failed")
+        return False
+    logger.warning("giving up on %s==%s after %d attempts (%s)", rel.package, rel.version, n, why)
+    store.update_stage(conn, rid, "scan_failed")
+    _alert_unscanned(cfg, conn, rid, rel,
+                     f"UNREVIEWED: this release could not be scanned after {n} attempts ({why[:300]}), so "
+                     f"nothing in it was reviewed. Needs manual review.")
+    return True
+
+
 def _fetch_one(cfg, rel, meta=None):
     try:
         return fetcher.fetch_artifacts(cfg, rel, meta)
@@ -219,9 +247,7 @@ def _process_fetched(cfg, conn, rvw, ruleset, rel, result, offline=False, guard=
         _alert_unscanned(cfg, conn, rid, rel, _refusal_note(str(result)))
         return True
     if isinstance(result, Exception):
-        logger.warning("fetch_failed for %s==%s; will retry next tick", rel.package, rel.version)
-        store.update_stage(conn, rid, "fetch_failed")
-        return False
+        return _scan_failed(cfg, conn, rid, rel, result)
     if result is None:
         store.update_stage(conn, rid, "no_sdist")
         return True
@@ -251,10 +277,9 @@ def _process_fetched(cfg, conn, rvw, ruleset, rel, result, offline=False, guard=
         if tr.escalate:
             _review_escalated(cfg, conn, rvw, d, tr, rid, offline=offline, guard=guard)
         return True
-    except Exception:
-        logger.exception("processing failed for %s==%s; will retry next tick", rel.package, rel.version)
-        store.update_stage(conn, rid, "fetch_failed")
-        return False
+    except Exception as e:
+        logger.exception("processing failed for %s==%s", rel.package, rel.version)
+        return _scan_failed(cfg, conn, rid, rel, e)
 
 
 def seed_now(cfg: Config):
@@ -343,7 +368,8 @@ def run_once(cfg: Config, *, seed_if_fresh: bool = True, recent: int | None = No
         with ThreadPoolExecutor(max_workers=W) as ex:
             for start in range(0, len(prepared), W):
                 window = prepared[start:start + W]
-                futs = {i: ex.submit(_fetch_one, cfg, rel)
+                futs = {i: ex.submit(_fetch_one,
+                                     _attempt_cfg(cfg, store.scan_attempts(conn, rel.package, rel.version)), rel)
                         for i, (rel, stg) in enumerate(window) if stg not in TERMINAL}
                 for i, (rel, stg) in enumerate(window):
                     if stg in TERMINAL:
@@ -428,6 +454,8 @@ def list_pending(cfg: Config):
             err = "tarball refused, not unpacked (see reason); inspect it by hand"
         elif row["stage"] == "refused_to_fetch":
             err = "tarball refused, not downloaded (see reason); inspect it by hand"
+        elif row["stage"] == "scan_failed":
+            err = "could not be scanned after repeated attempts (see reason); inspect it by hand"
         elif not stored:
             try:
                 art = fetcher.fetch_artifacts(cfg, NewRelease(row["package"], row["version"], row["serial"]))

@@ -350,6 +350,11 @@ queued: no model can review it, so it goes straight to `pending` for a human.
   `pending` says so: `package metadata failed to download: 2 release(s) being retried, 1 given up on
   after 4 attempts (not scanned)`.
 
+- **A release that fails to download or process** (a timeout, a registry error, a file the tool can't
+  handle) is retried on the next scans, with a longer download deadline each time (×2, ×3, ×4). After 4
+  attempts it alerts as `UNREVIEWED: this release could not be scanned after 4 attempts (<error>) … Needs
+  manual review.` and goes to `pending`, so one release that always fails can't stall the scan.
+
 Downloads have a total deadline (`fetch_deadline_s`, 120 s; `packument_deadline_s`, 300 s for package
 metadata), so one stalled download can't hold up a scan.
 
