@@ -65,10 +65,7 @@ class Config:
 
 
 def load_config(path) -> Config:
-    path = Path(path)
-    if not path.exists():
-        return Config()
-    raw = tomllib.loads(path.read_text())
+    raw = tomllib.loads(Path(path).read_text())
     rv = raw.pop("reviewer", {})
     default_rv = ReviewerConfig()
     reviewer = replace(default_rv, **{k: v for k, v in rv.items() if hasattr(default_rv, k)})

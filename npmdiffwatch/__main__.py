@@ -10,7 +10,12 @@ from .guard import describe
 
 
 def _cfg(args):
-    cfg = load_config(args.config) if args.config else Config()
+    try:
+        cfg = load_config(args.config) if args.config else Config()
+    except FileNotFoundError:
+        # Never fall back to the built-in defaults here: they point at the default database.
+        print(f"npmdiffwatch: config file not found: {args.config}", file=sys.stderr)
+        sys.exit(2)
     if args.model or args.endpoint:       # an OpenAI-compatible server (llama.cpp, llama-swap, Ollama, vLLM)
         rc = dataclasses.replace(cfg.reviewer, provider="openai", model=args.model or cfg.reviewer.model,
                                  base_url=args.endpoint or cfg.reviewer.base_url)

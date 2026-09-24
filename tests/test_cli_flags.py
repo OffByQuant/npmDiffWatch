@@ -1,6 +1,8 @@
 """--model / --endpoint point the reviewer at an OpenAI-compatible server without a config file."""
 import argparse
 
+import pytest
+
 from npmdiffwatch import __main__ as cli
 
 
@@ -31,3 +33,20 @@ def test_flags_override_the_config_file(tmp_path):
 def test_no_flags_leaves_the_config_alone():
     rc = cli._cfg(_args()).reviewer
     assert rc.model == "qwen-singleshot"
+
+
+def test_a_missing_config_file_stops_instead_of_using_the_default_database(tmp_path, capsys):
+    missing = tmp_path / "typo.toml"
+    try:
+        cli._cfg(_args(config=str(missing)))
+    except SystemExit as e:
+        assert e.code == 2
+    else:
+        raise AssertionError("a missing -c file must not fall back to the built-in defaults")
+    assert str(missing) in capsys.readouterr().err
+
+
+def test_load_config_refuses_a_missing_file(tmp_path):
+    from npmdiffwatch.config import load_config
+    with pytest.raises(FileNotFoundError):
+        load_config(tmp_path / "typo.toml")
