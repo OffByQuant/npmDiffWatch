@@ -14,6 +14,8 @@ class ReviewerConfig:
     timeout: float = 300.0             # per-attempt: retry n waits timeout x n (300s, 600s, 900s)
     max_review_attempts: int = 3
     max_pending_per_tick: int = 20     # queued reviews retried at the start of each tick
+    budget_safety: float = 0.6         # a review may be predicted to use at most this share of `timeout`
+    probe_timeout: float = 60.0        # health probe / calibration (covers llama-swap loading a model)
     max_input_chars: int = 200_000
     max_output_tokens: int = 8192
     opus_escalation_confidence: float = 0.6
