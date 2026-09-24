@@ -31,7 +31,7 @@ def _dict(value) -> dict:
     return value if isinstance(value, dict) else {}
 
 
-def _diff_json(old_bytes: bytes | None, new_bytes: bytes | None) -> tuple[list[PkgJsonChange], frozenset]:
+def _diff_json(old_bytes: bytes | None, new_bytes: bytes | None) -> tuple[list[PkgJsonChange], frozenset, str]:
     old = _json_object(old_bytes)
     new_json = _json_object(new_bytes)
     changes = []
@@ -49,7 +49,10 @@ def _diff_json(old_bytes: bytes | None, new_bytes: bytes | None) -> tuple[list[P
         if ov != nv:
             changes.append(PkgJsonChange(field, json.dumps(ov) if ov is not None else None,
                                          json.dumps(nv) if nv is not None else None))
-    return changes, frozenset(changed_scripts)
+    # The text of the install-time scripts this version adds or changes, for the install_script_contains check.
+    # Each ends in " ;" so a pattern like "| sh " also matches a pipe at the very end of a script.
+    text = "".join(f"{new_scripts[h]} ; " for h in ("preinstall", "install", "postinstall") if h in changed_scripts)
+    return changes, frozenset(changed_scripts), text
 
 
 def _diff_lockfile(old_bytes: bytes | None, new_bytes: bytes | None) -> tuple[bool, bool]:
@@ -77,6 +80,7 @@ def build_diff(a: ArtifactSet) -> Diff:
     changed: list[FileDiff] = []
     pkg_changes: list[PkgJsonChange] = []
     changed_scripts_set: frozenset = frozenset()
+    changed_script_text = ""
     lock_meta: dict[str, bool] = {}
 
     for path in sorted(set(a.new_files) | set(a.prior_files)):
@@ -86,7 +90,7 @@ def build_diff(a: ArtifactSet) -> Diff:
         nl, pl = _lines(new or b""), _lines(prior or b"")
 
         if path == "package.json":
-            pkg_changes, cs = _diff_json(prior, new)
+            pkg_changes, cs, changed_script_text = _diff_json(prior, new)
             if a.prior_version is None:
                 # First release: every field is "new", so only an install-time script is a signal.
                 pkg_changes = [c for c in pkg_changes if c.field == "scripts"] if cs else []
@@ -121,6 +125,7 @@ def build_diff(a: ArtifactSet) -> Diff:
     # frozen, so set through object.__setattr__ rather than plain assignment.
     object.__setattr__(diff, "_lock_meta", lock_meta)
     object.__setattr__(diff, "_changed_scripts", changed_scripts_set)
+    object.__setattr__(diff, "_changed_script_text", changed_script_text)
     return diff
 
 

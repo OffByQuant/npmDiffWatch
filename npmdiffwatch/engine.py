@@ -39,7 +39,8 @@ def triage(diff, cfg, ruleset, maintainer_context=None) -> TriageResult:
                 fired.append(fr)
                 score += w
         elif rule.applies_to == "package_json":
-            ctx = {"changed_fields": facts.package_json_changes, "changed_scripts": facts.changed_scripts}
+            ctx = {"changed_fields": facts.package_json_changes, "changed_scripts": facts.changed_scripts,
+                   "changed_script_text": facts.changed_script_text}
             if evaluate(rule.match, ctx):
                 fr, w = _fire(rule, "package.json", (0, 0), 1.0)
                 fired.append(fr)

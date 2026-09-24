@@ -13,11 +13,13 @@ DEP_REASONS = {"typosquat", "nonexistent", "brand-new", "not-screened-cap"}
 SCOPES = {"code", "binary", "dep", "package_json", "lockfile", "maintainer"}
 _BOOL = {"all", "any", "not"}
 MAX_REGEX_LEN = 1000
+MAX_SUBSTRINGS, MAX_SUBSTRING_LEN = 100, 200
 _PRED_SCOPE = {
     "bound_call": {"code"}, "import_present": {"code"}, "regex": {"code"},
     "blob_present": {"code"}, "syntax_error": {"code"}, "location_at_least": {"code"},
     "binary_reason": {"binary"}, "dep_reason": {"dep"},
     "pkg_field_changed": {"package_json"}, "pkg_script_added": {"package_json"},
+    "install_script_contains": {"package_json"},
     "lock_new_package": {"lockfile"}, "lock_integrity_change": {"lockfile"},
     "maintainer_changed": {"maintainer"}, "publisher_changed": {"maintainer"},
     "low_footprint_publisher": {"maintainer"},
@@ -74,6 +76,9 @@ def _valid_pred_args(name, args, scope) -> bool:
         return isinstance(args, str)
     if name in ("lock_new_package", "lock_integrity_change"):
         return args is True
+    if name == "install_script_contains":      # plain substrings, never regex: linear time, nothing to blow up
+        return (isinstance(args, list) and 0 < len(args) <= MAX_SUBSTRINGS
+                and all(isinstance(s, str) and 0 < len(s) <= MAX_SUBSTRING_LEN for s in args))
     return False
 
 
@@ -164,6 +169,9 @@ def _pred(name, args, ctx) -> bool:
         return args in ctx.get("changed_fields", set())
     if name == "pkg_script_added":
         return args in ctx.get("changed_scripts", set())
+    if name == "install_script_contains":
+        text = ctx.get("changed_script_text", "").lower()
+        return any(s.lower() in text for s in args)
     if name == "lock_new_package":
         return ctx.get("has_new_packages", False) is True
     if name == "lock_integrity_change":
