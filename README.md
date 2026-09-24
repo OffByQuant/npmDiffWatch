@@ -27,6 +27,10 @@ new npm releases → diff against the prior version → community rules score th
 State lives in a local SQLite database; nothing is hosted, and nothing leaves your machine except the
 calls to the npm registry and the model endpoint you point it at.
 
+Every alert says how it was reached: a **model verdict** with the code it cites; a **heuristic alert**
+when you run without a model; or **UNREVIEWED — needs manual review** when the tool refused to unpack a
+tarball (oversized or malformed archives can hide a payload), with the reason.
+
 ---
 
 ## 💡 Why NpmDiffWatch
@@ -38,6 +42,10 @@ calls to the npm registry and the model endpoint you point it at.
   `.tgz` into memory, reads the source statically, and discards it — no `npm install`, no build, no
   `require`, no `node`, no `eval`. Package bytes reach the model only as request-body text, never as a URL
   it fetches. [More ↓](#-run-it-safely)
+- **Evidence, not hunches.** The reviewer calls a release malicious only when the code it is shown
+  concretely exfiltrates secrets, downloads or decodes code and runs it, or destroys data or installs
+  persistence, and it must cite the hunk. Powerful-but-normal code (`child_process`, `eval`, network calls)
+  is benign without that evidence, which keeps false alarms on legitimate CLIs and SDKs down.
 - **Community rules, run safely.** Detection rules are pure structured data (YAML) evaluated by a matcher
   with no `eval`/`exec` — so you can run other people's rules without running their code. See
   [`rules/community/`](rules/community).
@@ -78,7 +86,8 @@ npmdiffwatch --model qwen-singleshot watch --serve --recent 500
   while a backlog is waiting `watch` scans back-to-back, sleeping only once it has caught up.
 
 For everything else (a frontier API with a key, reasoning-model settings, webhooks) use a config file:
-`cp examples/local-qwen.toml npmdiffwatch.toml`, then pass `-c npmdiffwatch.toml`. Other commands:
+`cp examples/local-qwen.toml npmdiffwatch.toml`, then pass `-c npmdiffwatch.toml` (a path that doesn't
+exist stops with an error rather than running on the defaults). Other commands:
 
 ```bash
 npmdiffwatch -c npmdiffwatch.toml run            # one scan tick (for cron, systemd, CI)
@@ -111,6 +120,10 @@ version it processed (the diff basis, the triage score, and which rules fired), 
 notification sent, and a **verdicts** row with the reviewer's call — classification, confidence, attack
 type, reasoning, and model — plus your own `human_label` once you adjudicate it (`pending` to review,
 `adjudicate` to record).
+
+It stays small on its own: once a day it compresses the stored evidence, keeps it only for releases a
+person may still act on, and deletes plain rows older than 90 days (`retention_days`). Verdicts, alerts
+and the review queues are never pruned.
 
 A `releases` × `verdicts` slice from a real run (triage score is an unbounded sum of fired-rule weights;
 the default escalation threshold is 40, so anything below it never reaches the reviewer):
@@ -211,8 +224,10 @@ Directions, not promises — contributions toward any of these are welcome:
 - **A labeled evaluation set.** Measure detection precision/recall against known-malicious npm releases,
   so rule and weight changes can be scored instead of guessed.
 - **Easier install.** A published package / `pipx` one-liner instead of an editable clone.
-- **Resilient long runs.** Rate-limit-aware, resumable polling of the replication feed for unattended
-  deployments.
+- **Keep up with the whole firehose on one GPU.** Reviews run inside the scan loop, so a full-firehose
+  run on a single local model falls behind: in a test run with Gemma on one GPU it covered about 1.4 npm
+  changes a second while npm published over 3. Moving reviews off the scan path is the fix; until then,
+  watchlist mode keeps up easily.
 
 ---
 
