@@ -170,6 +170,22 @@ def _fetch_one(cfg, rel):
         return e
 
 
+_REFUSALS = {
+    "decompressed-size": "it unpacks to more than the size limit",
+    "members": "it has more files than the limit",
+    "member-name": "a file path escapes the package (absolute or '..')",
+    "member-size": "one file is over the size limit",
+    "total-size": "its files add up to more than the size limit",
+}
+
+
+def _refusal_note(reason: str) -> str:
+    why = _REFUSALS.get(reason) or ("it is not a readable gzip tarball" if reason.startswith("bad-archive") else "")
+    return (f"UNREVIEWED: npmdiffwatch refused to unpack this tarball ({reason}{': ' + why if why else ''}), so "
+            f"nothing in it was scanned. Oversized or malformed archives can hide a payload from scanners. "
+            f"Needs manual review.")
+
+
 def _process_fetched(cfg, conn, rvw, ruleset, rel, result, offline=False, guard=None) -> bool:
     rid = store.record_release(conn, rel.package, rel.version, rel.serial, False, None, "tgz")
     if isinstance(result, fetcher.RefusedToFetch):
@@ -177,8 +193,11 @@ def _process_fetched(cfg, conn, rvw, ruleset, rel, result, offline=False, guard=
         return True
     if isinstance(result, fetcher.RefusedToExtract):
         store.update_stage(conn, rid, "refused_to_extract")
-        notifier.emit(cfg, conn, Verdict(rel.package, rel.version,
-                      "suspicious-heuristic", 0.0, [], False), rid)
+        # Never unpacked, so never scanned: queue it for a human (`pending`) and say why in the alert.
+        v = Verdict(rel.package, rel.version, "suspicious", 0.0, [], False, confidence=0.0, attack_type="none",
+                    reasoning=_refusal_note(str(result)), cited_hunk="", recommended_action="monitor", model="none")
+        store.record_verdict(conn, rid, v)
+        notifier.emit(cfg, conn, dataclasses.replace(v, classification="suspicious-heuristic"), rid)
         return True
     if isinstance(result, Exception):
         logger.warning("fetch_failed for %s==%s; will retry next tick", rel.package, rel.version)
@@ -372,7 +391,9 @@ def list_pending(cfg: Config):
     for row in store.pending_adjudication(conn):
         stored = row["evidence"]
         diff_text, err = stored, None
-        if not stored:
+        if row["stage"] == "refused_to_extract":
+            err = "tarball refused, not unpacked (see reason); inspect it by hand"
+        elif not stored:
             try:
                 art = fetcher.fetch_artifacts(cfg, NewRelease(row["package"], row["version"], row["serial"]))
                 if art is not None:
