@@ -24,3 +24,12 @@ artifact_cache/
 # stale nested copy + a stray redirect artifact (not part of the project)
 Node/
 /2
+
+# Internal notes and local run data: never published
+internal/
+docs/superpowers/
+/CLAUDE.md
+.superpowers/
+.worktrees/
+.diffwatch*/
+results-showcase/

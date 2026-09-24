@@ -125,22 +125,10 @@ It stays small on its own: once a day it compresses the stored evidence, keeps i
 person may still act on, and deletes plain rows older than 90 days (`retention_days`). Verdicts, alerts
 and the review queues are never pruned.
 
-A `releases` × `verdicts` slice from a real run (triage score is an unbounded sum of fired-rule weights;
-the default escalation threshold is 40, so anything below it never reaches the reviewer):
-
-```text
-package  version  triage_score  attack_type       classification
--------  -------  ------------  ----------------  --------------
-pkg-a    9.1.0          21135   install-hook-rce  malicious
-pkg-b    2.9.32         16400   typosquat         malicious
-pkg-c    0.7.2           5975   dropper           malicious
-pkg-d    1.0.44          2510   typosquat         suspicious
-pkg-e    3.13.0        167740   none              benign
-```
-
-*(Package names anonymized.)* The last row is why the LLM reviewer earns its place: a brand-new package can
-rack up a huge heuristic score yet be correctly cleared as benign on inspection — catching the false
-positive before it ever becomes an alert.
+The triage score is the sum of the weights of the rules that fired; the default escalation threshold is 40,
+so anything below it never reaches the reviewer. A high score is not a verdict: a large brand-new package
+can rack up a huge score and still be cleared as benign on inspection, which is why the reviewer, not the
+score, decides what becomes an alert.
 
 ---
 
@@ -224,10 +212,9 @@ Directions, not promises — contributions toward any of these are welcome:
 - **A labeled evaluation set.** Measure detection precision/recall against known-malicious npm releases,
   so rule and weight changes can be scored instead of guessed.
 - **Easier install.** A published package / `pipx` one-liner instead of an editable clone.
-- **Keep up with the whole firehose on one GPU.** Reviews run inside the scan loop, so a full-firehose
-  run on a single local model falls behind: in a test run with Gemma on one GPU it covered about 1.4 npm
-  changes a second while npm published over 3. Moving reviews off the scan path is the fix; until then,
-  watchlist mode keeps up easily.
+- **Keep up with the whole firehose on one GPU.** Reviews run inside the scan loop, so on a single local
+  model a full-firehose run can fall behind npm at busy times. Moving reviews off the scan path is the
+  fix; until then, watchlist mode keeps up easily.
 
 ---
 

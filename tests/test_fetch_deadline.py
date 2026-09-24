@@ -1,5 +1,5 @@
 """urlopen's timeout bounds each socket read, not the download: a registry connection that trickles bytes
-never trips it, and one stuck download froze a whole scan tick for 15+ minutes (live, 2026-09-24).
+never trips it, so one stuck download could freeze a whole scan tick.
 Every registry download gets a total deadline."""
 import dataclasses
 
