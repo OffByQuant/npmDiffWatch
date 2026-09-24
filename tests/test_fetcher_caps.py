@@ -5,6 +5,7 @@ bounded; oversize/zip-bomb/too-many-member/traversal inputs must be refused or
 skipped, never extracted to disk.
 """
 import dataclasses
+import hashlib
 import io
 import tarfile
 
@@ -42,10 +43,32 @@ def test_too_many_members_refused():
         fetcher.extract_tgz(_tgz(members), _cfg(max_members=2))
 
 
-def test_oversize_member_refused():
-    blob = _tgz([("package/big.js", b"x" * 100)])
-    with pytest.raises(fetcher.RefusedToExtract):
-        fetcher.extract_tgz(blob, _cfg(max_member_bytes=10))
+def test_an_oversized_file_is_skipped_and_the_rest_is_still_scanned():
+    blob = _tgz([("package/package.json", b'{"scripts": {"postinstall": "node x.js"}}'),
+                 ("package/bin/tool", b"B" * 100), ("package/x.js", b"run();\n")])
+    files, binaries, *_ = fetcher.extract_tgz(blob, _cfg(max_member_bytes=50))
+    assert files == {"package.json": b'{"scripts": {"postinstall": "node x.js"}}', "x.js": b"run();\n"}
+    assert binaries == [{"path": "bin/tool", "size": 100, "reason": "file-too-large",
+                         "sha256": hashlib.sha256(b"B" * 100).hexdigest()}]
+
+
+def test_an_oversized_source_file_is_still_flagged_as_too_large_to_read():
+    blob = _tgz([("package/bundle.js", b"x" * 100)])
+    files, binaries, *_ = fetcher.extract_tgz(blob, _cfg(max_member_bytes=10, max_source_file_bytes=10))
+    assert files == {}
+    assert [(b["path"], b["reason"]) for b in binaries] == [("bundle.js", "source-too-large")]
+
+
+def test_an_oversized_native_binary_still_counts_as_a_new_binary():
+    blob = _tgz([("package/addon.node", b"N" * 100)])
+    _, binaries, *_ = fetcher.extract_tgz(blob, _cfg(max_member_bytes=10))
+    assert binaries == [{"path": "addon.node", "size": 100, "sha256": hashlib.sha256(b"N" * 100).hexdigest()}]
+
+
+def test_the_archive_total_is_still_refused():
+    blob = _tgz([("package/a.bin", b"x" * 60), ("package/b.bin", b"x" * 60)])
+    with pytest.raises(fetcher.RefusedToExtract, match="total-size"):
+        fetcher.extract_tgz(blob, _cfg(max_member_bytes=10, max_total_bytes=100))
 
 
 def test_path_traversal_member_skipped_not_extracted():

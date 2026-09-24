@@ -81,8 +81,6 @@ def extract_tgz(blob: bytes, cfg: Config):
                 continue
             if _unsafe(m.name):
                 continue
-            if m.size > cfg.max_member_bytes:
-                raise RefusedToExtract("member-size")
             total += m.size
             if total > cfg.max_total_bytes:
                 raise RefusedToExtract("total-size")
@@ -93,7 +91,14 @@ def extract_tgz(blob: bytes, cfg: Config):
             if rel == "npm-shrinkwrap.json":
                 has_shrinkwrap = True
 
-            if _is_source(rel) and m.size <= cfg.max_source_file_bytes:
+            if m.size > cfg.max_member_bytes:
+                # Too big to read, so it is fingerprinted and skipped; whatever runs it (an install script, the
+                # code that loads it) is still scanned.
+                entry = {"path": rel, "size": m.size, "sha256": _sha256_of(tar.extractfile(m))}
+                if not _is_strict_binary(m.name):
+                    entry["reason"] = "source-too-large" if _is_source(rel) else "file-too-large"
+                binaries.append(entry)
+            elif _is_source(rel) and m.size <= cfg.max_source_file_bytes:
                 files[rel] = tar.extractfile(m).read(cfg.max_source_file_bytes + 1)
             elif _is_source(rel):
                 binaries.append({"path": rel, "size": m.size, "reason": "source-too-large",

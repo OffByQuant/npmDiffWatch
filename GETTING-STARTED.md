@@ -341,6 +341,11 @@ queued: no model can review it, so it goes straight to `pending` for a human.
   `UNREVIEWED: npmdiffwatch refused to unpack this tarball (<reason>) … Needs manual review.` and goes to
   `pending`. Oversized or malformed archives are a known way to hide a payload from scanners, so treat
   these as a cue to look deeper.
+- **One oversized file.** A single file over `max_member_bytes` (10 MB), such as a prebuilt platform
+  binary or a huge bundle, doesn't stop the scan. Its contents are skipped; its path, size and SHA-256
+  are recorded, and everything else in the package (package.json, install scripts, the code that loads
+  the file) is scanned as usual. An oversized `.js` still fires `binary-source-too-large`, and a new
+  `.node`/`.wasm` still fires `binary-new-binary`.
 - **Refused download.** A tarball bigger than `max_download_bytes` (50 MB), or a new release of a package on
   the built-in quarantine list, is never downloaded. It alerts the same way (`… it was not downloaded …` or
   `… on npmdiffwatch's quarantine list …`) and goes to `pending`. The quarantine alert doesn't call the
