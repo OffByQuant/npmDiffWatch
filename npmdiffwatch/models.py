@@ -39,6 +39,7 @@ class Diff:
     changed: list[FileDiff]; added_binaries: list[dict]
     added_dep_findings: list[dict] = field(default_factory=list)
     package_json_changes: list[PkgJsonChange] = field(default_factory=list)
+    description: str = ""          # the new version's package.json description: the author's claim, context only
 
 @dataclass(frozen=True)
 class FiredRule:

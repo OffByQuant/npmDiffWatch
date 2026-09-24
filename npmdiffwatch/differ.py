@@ -63,6 +63,14 @@ def _diff_lockfile(old_bytes: bytes | None, new_bytes: bytes | None) -> tuple[bo
     return has_new, has_integrity
 
 
+def _description(new_files) -> str:
+    try:
+        d = json.loads(new_files.get("package.json") or b"{}").get("description")
+    except (ValueError, AttributeError):
+        return ""
+    return " ".join(d.split())[:500] if isinstance(d, str) else ""     # one line: it must not pose as a hunk
+
+
 def build_diff(a: ArtifactSet) -> Diff:
     changed: list[FileDiff] = []
     pkg_changes: list[PkgJsonChange] = []
@@ -103,7 +111,7 @@ def build_diff(a: ArtifactSet) -> Diff:
             changed.append(FileDiff(path, kind, hunks, new_text))
 
     diff = Diff(a.package, a.version, a.prior_version is None, changed,
-                list(a.added_binaries), list(a.added_dep_findings), pkg_changes)
+                list(a.added_binaries), list(a.added_dep_findings), pkg_changes, _description(a.new_files))
     # Side-channel metadata read back via getattr() in facts.build_facts; Diff is
     # frozen, so set through object.__setattr__ rather than plain assignment.
     object.__setattr__(diff, "_lock_meta", lock_meta)
