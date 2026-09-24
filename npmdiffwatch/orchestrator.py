@@ -43,6 +43,20 @@ def _is_timeout(e) -> bool:
     return isinstance(reason, TimeoutError) or type(cause).__name__ == "APITimeoutError"
 
 
+def review_lock_path(cfg):
+    return cfg.lock_path.with_name(cfg.lock_path.name + ".review")
+
+
+def _review_slot(cfg):
+    """Blocking lock held while a review is at the model, so `review-pending` and the watch loop (separate
+    processes) never have requests at one endpoint at the same time. Freed when the file is closed."""
+    path = review_lock_path(cfg)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    f = open(path, "a+")
+    fcntl.flock(f, fcntl.LOCK_EX)
+    return f
+
+
 def _record(cfg, conn, rid, verdict, score):
     store.clear_pending(conn, rid)
     store.record_verdict(conn, rid, verdict)
@@ -67,7 +81,8 @@ def _attempt_review(cfg, conn, rvw, rid, package, version, score, fired_rules, t
     attempt = store.review_attempts(conn, rid) + 1
     t0 = time.monotonic()
     try:
-        verdict = rvw.review_text(package, version, score, fired_rules, text, attempt=attempt)
+        with _review_slot(cfg):
+            verdict = rvw.review_text(package, version, score, fired_rules, text, attempt=attempt)
     except reviewer.ReviewUnavailable as e:
         logger.warning("LLM review failed for %s==%s (attempt %d): %s", package, version, attempt, e)
         if _endpoint_down(e):     # an outage, not this release's fault: don't spend an attempt
@@ -79,7 +94,8 @@ def _attempt_review(cfg, conn, rvw, rid, package, version, score, fired_rules, t
             guard.record_timeout()
             return False
         return True
-    if guard is not None:
+    if guard is not None and verdict.model == rvw.backend.primary_model:
+        # Only a single primary-model call is a speed sample: an escalation spans two models (and a swap).
         # prompt_tokens cover the system prompt as well as the package content, so the chars must too.
         guard.record_success(getattr(rvw.backend, "last_usage", None), time.monotonic() - t0,
                              len(reviewer.SYSTEM_PROMPT) + len(text))
@@ -110,16 +126,19 @@ def _review_escalated(cfg, conn, rvw, d, tr, rid, *, offline=False, guard=None):
 
 
 def drain_pending(cfg, conn, rvw, *, auto: bool, reasons=None, limit=None, guard=None) -> int:
-    """Review parked releases. auto (each tick): model_busy first, then unreachable-endpoint parks and failed
-    reviews with attempts left. Manual (`review-pending`): by default oversized releases and exhausted
-    retries — run it with a larger-context model config. Inputs over this endpoint's cap are skipped
+    """Review parked releases. auto (each tick): model_busy first, then unreachable-endpoint parks, failed
+    reviews with attempts left, and too_large rows that now fit. Manual (`review-pending`): by default oversized
+    releases and exhausted retries — run it with a larger-context model config. Inputs over this endpoint's cap are skipped
     (auto: re-parked as too_large). `limit` caps attempts, not successes. Returns the number reviewed."""
     if auto:
         reasons = ("model_busy", "endpoint_unreachable", "review_failed")
     elif not reasons:
         reasons = ("too_large", "review_failed")
     cap = guard.input_cap_chars() if guard is not None else cfg.reviewer.max_input_chars
-    rows = sorted(store.pending_reviews(conn, reasons),
+    rows = store.pending_reviews(conn, reasons)
+    if auto:      # oversized for an earlier cap (cold start, a smaller max_input_chars) but fits this one
+        rows += store.pending_reviews(conn, ("too_large",), max_chars=cap)
+    rows = sorted(rows,
                   key=lambda r: (r["pending_reason"] != "model_busy", r["release_id"]))
     done = tried = 0
     for row in rows:

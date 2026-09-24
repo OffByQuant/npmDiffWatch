@@ -23,6 +23,8 @@ CALIBRATION_TEXT = "The quick brown fox jumps over the lazy dog. " * 400   # ~4k
 def _rate(usage, secs, input_chars):
     """Input-reading speed (tokens/s) from one request, or None if overhead would dominate it."""
     if usage and usage.get("prompt_per_second"):
+        if usage.get("prompt_n", MIN_SAMPLE_TOKENS) < MIN_SAMPLE_TOKENS:
+            return None
         return float(usage["prompt_per_second"])
     tokens = usage["prompt_tokens"] if usage else input_chars / DEFAULT_CPT
     if tokens < MIN_SAMPLE_TOKENS or secs <= 0:
@@ -98,6 +100,7 @@ class ReviewerGuard:
 
     def admit(self):
         """None if a review may be sent now; otherwise why not (stored as the model_busy detail)."""
+        self._refresh()           # another process (review-pending, the watch loop) may have opened the breaker
         if self.state != "closed":
             return self.detail
         if self.memory is not None:
@@ -106,30 +109,37 @@ class ReviewerGuard:
                 return f"host memory: {why}"
         return None
 
-    def input_cap_chars(self):
-        cap = self.rc.max_input_chars
+    def _cap_terms(self):
+        """Each limit on the review input as (chars, what sets it); the cap is the smallest."""
+        terms = [(self.rc.max_input_chars, "reviewer.max_input_chars")]
         if not self.measured:
-            return cap
+            return terms
         if self.tok_s is None:
-            return min(cap, COLD_START_CAP)
-        cap = min(cap, int(self.tok_s * self.rc.timeout * self.rc.budget_safety * self.cpt))
+            terms.append((COLD_START_CAP, "cold-start cap until this endpoint's speed is measured"))
+        else:
+            terms.append((int(self.tok_s * self.rc.timeout * self.rc.budget_safety * self.cpt),
+                          f"≈{self.tok_s:.0f} tok/s × {self.rc.timeout:.0f}s × {self.rc.budget_safety}"))
         if self.ctx_tokens:
             room = self.ctx_tokens - self.rc.max_output_tokens - len(SYSTEM_PROMPT) / DEFAULT_CPT
-            cap = min(cap, int(room * self.cpt))
-        return max(cap, 0)
+            terms.append((int(room * self.cpt), f"{self.ctx_tokens:,}-token context window"))
+        return terms
+
+    def input_cap_chars(self):
+        return max(min(c for c, _ in self._cap_terms()), 0)
 
     def cap_explain(self):
-        cap = self.input_cap_chars()
-        if self.measured and self.tok_s:
-            return (f"this endpoint's cap is {cap:,} chars (≈{self.tok_s:.0f} tok/s × {self.rc.timeout:.0f}s "
-                    f"× {self.rc.budget_safety})")
-        return f"this endpoint's cap is {cap:,} chars"
+        cap, why = min(self._cap_terms(), key=lambda t: t[0])
+        return f"this endpoint's cap is {max(cap, 0):,} chars ({why})"
 
     def record_success(self, usage, secs, input_chars):
+        if not self.measured:
+            return
         rate = _rate(usage, secs, input_chars)
         if rate is None:
             return
         if self.tok_s is not None and rate < self.rc.slowdown_ratio * self.tok_s:
+            if not usage or not usage.get("prompt_per_second"):
+                return    # wall-clock time includes output and model loading: not evidence of a degrading server
             self.slow_streak += 1                     # slow samples never lower the baseline
             if self.slow_streak >= 2:
                 pct = 100 * rate / self.tok_s
@@ -163,9 +173,16 @@ class ReviewerGuard:
         self.state, self.detail, self.paused_until = state, detail, paused_until
         if state == "closed":
             self.slow_streak = 0
-        self._save()
+        self._save(transition=True)
 
-    def _save(self):
+    def _refresh(self):
+        s = store.get_reviewer_stats(self.conn, self.endpoint, self.model)
+        if s:
+            self.state, self.detail, self.paused_until = s["state"] or "closed", s["detail"] or "", s["paused_until"] or 0.0
+
+    def _save(self, transition=False):
+        if not transition:
+            self._refresh()       # only a state transition may change the breaker; a stats update keeps the stored one
         store.save_reviewer_stats(self.conn, self.endpoint, self.model, tok_s=self.tok_s, chars_per_token=self.cpt,
                                   samples=self.samples, state=self.state, detail=self.detail,
                                   paused_until=self.paused_until, slow_streak=self.slow_streak)

@@ -37,9 +37,12 @@ def _usage_of(data) -> dict | None:
     if not isinstance(u, dict) or not isinstance(u.get("prompt_tokens"), int):
         return None
     out = {"prompt_tokens": u["prompt_tokens"], "completion_tokens": u.get("completion_tokens") or 0}
-    pps = (data.get("timings") or {}).get("prompt_per_second")
+    timings = data.get("timings") or {}
+    pps = timings.get("prompt_per_second")
     if isinstance(pps, (int, float)) and pps > 0:
         out["prompt_per_second"] = float(pps)
+        if isinstance(timings.get("prompt_n"), int):
+            out["prompt_n"] = timings["prompt_n"]     # tokens actually read; the rest came from the prompt cache
     return out
 
 

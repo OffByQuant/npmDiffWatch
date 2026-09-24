@@ -152,13 +152,18 @@ def _u(tokens):
     return {"prompt_tokens": tokens, "completion_tokens": 100}
 
 
+def _pps(rate, n=10_000):
+    """A llama.cpp response: the server timed its own prefill of n tokens at `rate` tok/s."""
+    return {"prompt_tokens": n, "completion_tokens": 100, "prompt_per_second": rate, "prompt_n": n}
+
+
 def test_single_slow_sample_does_not_trip_or_lower_baseline(tmp_path):
     gd, said = _guard(tmp_path)
     gd.tok_s = 100.0
-    gd.record_success(_u(10_000), secs=500.0, input_chars=34_000)     # 20 tok/s: e.g. llama-swap cold load
+    gd.record_success(_pps(20.0), secs=500.0, input_chars=34_000)     # 20 tok/s: e.g. llama-swap cold load
     assert gd.admit() is None and gd.tok_s == 100.0
-    gd.record_success(_u(10_000), secs=100.0, input_chars=34_000)     # back to normal resets the streak
-    gd.record_success(_u(10_000), secs=500.0, input_chars=34_000)
+    gd.record_success(_pps(100.0), secs=100.0, input_chars=34_000)     # back to normal resets the streak
+    gd.record_success(_pps(20.0), secs=500.0, input_chars=34_000)
     assert gd.admit() is None
 
 
@@ -167,8 +172,8 @@ def test_two_consecutive_slow_reviews_pause_with_a_warning(tmp_path):
     be = Backend(clock)
     gd, said = _guard(tmp_path, be, clock)
     gd.tok_s = 100.0
-    gd.record_success(_u(10_000), secs=500.0, input_chars=34_000)
-    gd.record_success(_u(10_000), secs=500.0, input_chars=34_000)
+    gd.record_success(_pps(20.0), secs=500.0, input_chars=34_000)
+    gd.record_success(_pps(20.0), secs=500.0, input_chars=34_000)
     assert gd.admit() == "degraded" and gd.tok_s == 100.0
     assert any("20% of its measured speed" in s for s in said)
     gd.begin_batch()                                   # still inside the pause: no probe
@@ -183,9 +188,9 @@ def test_degraded_also_posts_the_webhook(tmp_path, monkeypatch):
     monkeypatch.setattr(g.notifier, "post_webhook", lambda cfg, text: sent.append(text) or True)
     gd, _ = _guard(tmp_path)
     gd.tok_s = 100.0
-    gd.record_success(_u(10_000), secs=500.0, input_chars=34_000)
+    gd.record_success(_pps(20.0), secs=500.0, input_chars=34_000)
     assert sent == []
-    gd.record_success(_u(10_000), secs=500.0, input_chars=34_000)
+    gd.record_success(_pps(20.0), secs=500.0, input_chars=34_000)
     assert len(sent) == 1 and "measured speed" in sent[0]
 
 
@@ -205,3 +210,69 @@ def test_host_memory_pressure_defers_reviews(tmp_path):
     assert gd.admit() == "host memory: swap 83% used"
     mem.why = None
     assert gd.admit() is None
+
+
+def test_small_llamacpp_prefill_is_not_a_speed_sample(tmp_path):
+    # Short reviews share the cached system prompt: the server times only a few hundred tokens, and that
+    # rate is dominated by overhead. Two of them must not pause a healthy 7.9k tok/s endpoint.
+    gd, said = _guard(tmp_path)
+    gd.tok_s = 7867.0
+    for _ in range(2):
+        gd.record_success(_pps(1500.0, n=1_200), secs=1.0, input_chars=4_000)
+    assert gd.admit() is None and gd.tok_s == 7867.0 and said == []
+
+
+def test_cached_prompt_tokens_do_not_inflate_the_speed(tmp_path):
+    gd, _ = _guard(tmp_path)
+    gd.record_success({"prompt_tokens": 12_000, "completion_tokens": 100, "prompt_per_second": 900.0,
+                       "prompt_n": 300}, secs=0.5, input_chars=40_000)
+    assert gd.tok_s is None
+
+
+def test_slowdown_is_judged_only_on_server_timed_prefill(tmp_path):
+    # Without llama.cpp timings, elapsed time includes output generation (a long reasoning answer) and
+    # model loading, so a slow wall-clock sample is not evidence the server is degrading.
+    gd, said = _guard(tmp_path)
+    gd.tok_s = 100.0
+    gd.record_success(_u(10_000), secs=500.0, input_chars=34_000)
+    gd.record_success(_u(10_000), secs=500.0, input_chars=34_000)
+    assert gd.admit() is None and said == [] and gd.tok_s == 100.0
+
+
+def test_hosted_api_never_trips_the_slowdown_detector(tmp_path):
+    gd, said = _guard(tmp_path, provider="anthropic")
+    gd.tok_s = 100.0
+    gd.record_success(_pps(20.0), secs=500.0, input_chars=34_000)
+    gd.record_success(_pps(20.0), secs=500.0, input_chars=34_000)
+    assert gd.admit() is None and said == []
+
+
+def test_breaker_opened_by_another_process_is_honoured(tmp_path):
+    clock = Clock()
+    gd, _ = _guard(tmp_path, clock=clock)
+    gd.tok_s = 100.0
+    other = g.ReviewerGuard(gd.cfg, gd.backend, gd.conn, clock=clock, memory=None, out=lambda m: None)
+    assert other.admit() is None
+    gd.record_timeout()                                # the watch loop's guard opens the breaker
+    assert other.admit() == "breaker open after timeout"
+
+
+def test_a_success_elsewhere_does_not_close_an_open_breaker(tmp_path):
+    clock = Clock()
+    gd, _ = _guard(tmp_path, clock=clock)
+    gd.tok_s = 100.0
+    other = g.ReviewerGuard(gd.cfg, gd.backend, gd.conn, clock=clock, memory=None, out=lambda m: None)
+    assert other.admit() is None                       # review-pending sends a review...
+    gd.record_timeout()                                # ...while the watch loop's review times out
+    other.record_success(_pps(100.0), secs=100.0, input_chars=34_000)
+    assert store.get_reviewer_stats(gd.conn, gd.endpoint, gd.model)["state"] == "open"
+
+
+def test_cap_explain_names_the_binding_limit(tmp_path):
+    gd, _ = _guard(tmp_path)
+    gd.tok_s = 7867.0
+    assert "max_input_chars" in gd.cap_explain() and "tok/s" not in gd.cap_explain()
+    gd.tok_s = None
+    assert "until this endpoint's speed is measured" in gd.cap_explain()
+    gd.tok_s, gd.ctx_tokens = 7867.0, 8_192
+    assert "context window" in gd.cap_explain()

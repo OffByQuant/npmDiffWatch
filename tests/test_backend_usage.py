@@ -75,3 +75,11 @@ def test_context_length_from_llamacpp_props_then_none():
     def boom(url, timeout, headers):
         raise OSError("no")
     assert OpenAICompatibleBackend("http://h:1/v1", "m", get=boom).context_length() is None
+
+
+def test_usage_keeps_how_many_prompt_tokens_the_server_timed():
+    b = OpenAICompatibleBackend("http://h:1/v1", "m", post=_post_returning(
+        {"choices": [{"message": {"content": _VERDICT}}], "usage": {"prompt_tokens": 5000, "completion_tokens": 9},
+         "timings": {"prompt_per_second": 1234.5, "prompt_n": 812}}))
+    b.complete(model="m", system="s", user_text="u", schema=REVIEW_SCHEMA, max_tokens=10)
+    assert b.last_usage["prompt_n"] == 812

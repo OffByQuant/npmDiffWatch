@@ -289,7 +289,7 @@ later review doesn't depend on npm still hosting the tarball.
 | `model_busy` | the reviewer guard deferred it: breaker open after a timeout, the model degrading, or this machine short on memory | every tick, first, once the guard allows reviews |
 | `endpoint_unreachable` | the model server is down (each tick prints a warning) | every tick, once it's back |
 | `review_failed` | a review timed out or failed; retried at `timeout` × attempt (300s, 600s, 900s) | every tick, up to `max_review_attempts` (3) |
-| `too_large` | the highest-risk file alone exceeds `max_input_chars` (200k chars) | `review-pending` with a larger-context model |
+| `too_large` | the highest-risk file alone exceeds this endpoint's input cap (`max_input_chars`, 200k chars, or less for a slow endpoint) | every tick once it fits the cap (after calibration, or after you raise `max_input_chars`); otherwise `review-pending` with a larger-context model |
 
 Each tick retries at most `max_pending_per_tick` (20) queued releases before scanning. The rest wait for
 you — typically with a bigger model pointed at the same database:
@@ -314,7 +314,11 @@ model server isn't overloaded:
 - **Circuit breaker.** After a timeout, no more reviews are sent that batch; the next batch sends a tiny
   health probe first and resumes only if it answers within `probe_timeout`.
 - **Slowdown detector.** Two reviews in a row below `slowdown_ratio` of the measured speed pause reviews
-  for `degraded_pause_s` and print a warning — usually the model server is swapping; restart it.
+  for `degraded_pause_s` and print a warning — usually the model server is swapping; restart it. It judges
+  only servers that time their own input reading (llama.cpp, llama-swap); elsewhere wall-clock time also
+  counts output and model loading, so the timeout breaker is the protection.
+- **One request at a time.** `watch`/`run` and `review-pending` share a lock (`<lock_path>.review`), so
+  two processes never have reviews at the same endpoint at once.
 - **Host memory guard.** When the model runs on this machine, reviews pause while swap use is at or above
   `max_swap_used_pct` or the OS reports memory pressure.
 
@@ -330,6 +334,10 @@ need and serve one request at a time:
 | vLLM | `--max-model-len <ctx>` `--max-num-seqs 1` `--gpu-memory-utilization 0.9` |
 | Ollama | `num_ctx` in the Modelfile, `OLLAMA_NUM_PARALLEL=1` |
 | any reasoning model | turn thinking off (`chat_template_kwargs = { enable_thinking = false }`); reviews ran 1.6–4.4× faster with the same verdicts |
+
+**macOS and a model on another machine.** The first request to a LAN address (e.g. `192.168.x.x`) makes
+macOS ask whether your terminal app may use the Local Network. Until you allow it, the endpoint shows as
+unreachable. You can change it later under System Settings → Privacy & Security → Local Network.
 
 ---
 

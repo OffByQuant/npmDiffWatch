@@ -164,3 +164,77 @@ def test_chars_per_token_counts_the_system_prompt_too(tmp_path):
     rid = store.record_release(conn, "a", "1.0.0", 1, False, None, "tgz")
     orchestrator._review_escalated(cfg, conn, rvw, _diff("a", "x" * 20_000), _T, rid, guard=gd)
     assert 3.3 < gd.cpt < 3.5
+
+
+class _Escalating(Backend):
+    escalation_model = "big"
+
+    def complete(self, **kw):
+        super().complete(**kw)
+        return _OK.replace('"confidence":0.9', '"confidence":0.1')
+
+
+def test_escalated_review_is_not_a_speed_sample(tmp_path):
+    # The elapsed time covers two models (and a llama-swap model swap); usage is the second model's.
+    be = _Escalating(usage={"prompt_tokens": 10_000, "completion_tokens": 50})
+    cfg, conn, gd, rvw = _setup(tmp_path, be)
+    rid = store.record_release(conn, "a", "1.0.0", 1, False, None, "tgz")
+    orchestrator._review_escalated(cfg, conn, rvw, _diff("a"), _T, rid, guard=gd)
+    assert be.calls == 2 and gd.samples == 0 and gd.tok_s == 1000.0
+
+
+def test_reviews_hold_the_review_lock_while_the_model_works(tmp_path):
+    # `review-pending` and the watch loop are separate processes; one model slot must not get both.
+    import fcntl
+    seen = []
+
+    class Probe(Backend):
+        def complete(self, **kw):
+            with open(orchestrator.review_lock_path(cfg), "a+") as f:
+                try:
+                    fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    seen.append("free")
+                except BlockingIOError:
+                    seen.append("held")
+            return super().complete(**kw)
+
+    be = Probe()
+    cfg, conn, gd, rvw = _setup(tmp_path, be)
+    rid = store.record_release(conn, "a", "1.0.0", 1, False, None, "tgz")
+    orchestrator._review_escalated(cfg, conn, rvw, _diff("a"), _T, rid, guard=gd)
+    assert seen == ["held"]
+
+
+def test_auto_drain_reviews_too_large_rows_once_they_fit(tmp_path):
+    # Parked over the 40k cold-start cap before calibration; once measured, the endpoint takes 200k.
+    be = Backend()
+    cfg, conn, gd, rvw = _setup(tmp_path, be)
+    gd.tok_s = None
+    rid = store.record_release(conn, "big", "1.0.0", 1, False, None, "tgz")
+    orchestrator._review_escalated(cfg, conn, rvw, _diff("big", "x" * 60_000), _T, rid, guard=gd)
+    assert _reasons(conn) == {"big": "too_large"}
+    gd.tok_s = 7867.0
+    orchestrator.drain_pending(cfg, conn, rvw, auto=True, guard=gd)
+    assert be.calls == 1 and _reasons(conn) == {}
+
+
+def test_auto_drain_leaves_too_large_rows_that_still_do_not_fit(tmp_path):
+    be = Backend()
+    cfg, conn, gd, rvw = _setup(tmp_path, be)
+    rid = store.record_release(conn, "huge", "1.0.0", 1, False, None, "tgz")
+    orchestrator._review_escalated(cfg, conn, rvw, _diff("huge", "x" * 300_000), _T, rid, guard=gd)
+    orchestrator.drain_pending(cfg, conn, rvw, auto=True, guard=gd)
+    assert be.calls == 0 and _reasons(conn) == {"huge": "too_large"}
+
+
+def test_upgrade_backfills_the_length_of_already_parked_inputs(tmp_path):
+    # Rows parked before review_input_chars existed must still become eligible once they fit.
+    import zlib
+    cfg = _cfg(tmp_path)
+    conn = store.connect(cfg); store.init_schema(conn)
+    rid = store.record_release(conn, "old", "1.0.0", 1, False, None, "tgz")
+    store.park_for_review(conn, rid, "too_large", "needs 5 chars", "hello")
+    conn.execute("ALTER TABLE releases DROP COLUMN review_input_chars")
+    conn.execute("UPDATE releases SET review_input=? WHERE id=?", (zlib.compress(b"hello"), rid))
+    store.migrate_schema(conn)
+    assert [r["release_id"] for r in store.pending_reviews(conn, ("too_large",), max_chars=5)] == [rid]

@@ -38,12 +38,18 @@ def init_schema(conn): conn.executescript(SCHEMA); conn.commit(); migrate_schema
 
 def migrate_schema(conn):
     for col in ("maintainer_metadata", "evidence", "packument_json", "scripts_json", "has_lockfile", "has_shrinkwrap",
-                "review_attempts", "pending_reason", "pending_detail", "review_input"):
+                "review_attempts", "pending_reason", "pending_detail", "review_input", "review_input_chars"):
         try:
             conn.execute(f"SELECT {col} FROM releases LIMIT 1")
         except sqlite3.OperationalError:
             if col in ("has_lockfile", "has_shrinkwrap", "review_attempts"):
                 conn.execute(f"ALTER TABLE releases ADD COLUMN {col} INTEGER DEFAULT 0")
+            elif col == "review_input_chars":
+                conn.execute(f"ALTER TABLE releases ADD COLUMN {col} INTEGER")
+                for rid, blob in conn.execute("SELECT id, review_input FROM releases "
+                                              "WHERE review_input IS NOT NULL").fetchall():
+                    conn.execute("UPDATE releases SET review_input_chars=? WHERE id=?",
+                                 (len(zlib.decompress(blob).decode()), rid))
             else:
                 conn.execute(f"ALTER TABLE releases ADD COLUMN {col} TEXT")
             conn.commit()
@@ -145,22 +151,26 @@ def park_for_review(conn, release_id, reason, detail, review_input):
     """Queue a flagged release for a later LLM review. The review input is kept (compressed) so the
     review doesn't depend on npm still hosting the tarball; it is dropped once a verdict lands."""
     conn.execute("UPDATE releases SET stage='pending_review', pending_reason=?, pending_detail=?, "
-                 "review_input=? WHERE id=?",
-                 (reason, detail, zlib.compress(review_input.encode()), release_id))
+                 "review_input=?, review_input_chars=? WHERE id=?",
+                 (reason, detail, zlib.compress(review_input.encode()), len(review_input), release_id))
     conn.commit()
 
 def clear_pending(conn, release_id):
-    conn.execute("UPDATE releases SET pending_reason=NULL, pending_detail=NULL, review_input=NULL WHERE id=?",
+    conn.execute("UPDATE releases SET pending_reason=NULL, pending_detail=NULL, review_input=NULL, "
+                 "review_input_chars=NULL WHERE id=?",
                  (release_id,))
     conn.commit()
 
-def pending_reviews(conn, reasons=None):
+def pending_reviews(conn, reasons=None, max_chars=None):
     sql = ("SELECT id AS release_id, package, version, triage_score, triage_rules, pending_reason, "
            "pending_detail, COALESCE(review_attempts,0) AS review_attempts, review_input "
            "FROM releases WHERE stage='pending_review'")
     params = list(reasons or [])
     if params:
         sql += f" AND pending_reason IN ({','.join('?' * len(params))})"
+    if max_chars is not None:
+        sql += " AND review_input_chars <= ?"
+        params.append(max_chars)
     return conn.execute(sql + " ORDER BY id", params).fetchall()
 
 def review_input(row) -> str:
