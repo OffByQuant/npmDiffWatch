@@ -102,9 +102,10 @@ This covers criteria 2 and 3: a stuck endpoint costs at most one timeout plus on
 
 After every successful review the guard records the prompt's token count and the elapsed time. The token count
 comes from `usage.prompt_tokens` for OpenAI-compatible servers and `usage.input_tokens` for Anthropic. When a
-llama.cpp server returns `timings.prompt_per_second`, that number is used directly. **Backend interface change:**
-`complete()` returns `(verdict_json, usage)` instead of just the verdict text, where `usage` is
-`{prompt_tokens, completion_tokens, prompt_per_second?}` or `None` if the server gave none.
+llama.cpp server returns `timings.prompt_per_second`, that number is used directly. **Backend interface:**
+every backend sets `last_usage` after each request: `{prompt_tokens, completion_tokens, prompt_per_second?}`
+or `None` if the server gave none. When `usage` is missing, speed is estimated from `input_chars / 3.4`.
+Backends also gain `ping(text, timeout)` and `context_length()`.
 
 - **Speed estimate** `tok_s`: a moving average of `prompt_tokens / elapsed` over reviews with ≥ 2,000
   prompt tokens. Smaller prompts are dominated by fixed overhead and would skew the estimate.
@@ -169,13 +170,14 @@ New table:
 
 ```sql
 CREATE TABLE IF NOT EXISTS reviewer_stats(
-  endpoint TEXT, model TEXT, tok_s REAL, chars_per_token REAL, samples INTEGER, updated_at TEXT,
-  PRIMARY KEY(endpoint, model));
+  endpoint TEXT, model TEXT, tok_s REAL, chars_per_token REAL, samples INTEGER, state TEXT, detail TEXT,
+  paused_until REAL, slow_streak INTEGER, updated_at TEXT, PRIMARY KEY(endpoint, model));
 ```
 
 Keyed by `base_url` and model, so switching models (Qwen → Gemma) or machines starts a fresh
-calibration. Breaker state is per-process and in memory only; a restart starts closed and the first
-review, or the probe, finds the truth.
+calibration. The table also stores the breaker state (`state`, `detail`, `paused_until` as wall-clock time,
+`slow_streak`): a cron-driven `run` is a new process every tick, so in-memory state would reset the breaker
+every batch.
 
 ### 5.8 Config (all under `[reviewer]`, all optional)
 
