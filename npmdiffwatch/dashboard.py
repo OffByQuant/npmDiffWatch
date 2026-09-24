@@ -48,8 +48,13 @@ def _conf_pct(conf) -> str:
     return f"{int(round(c))}%"
 
 
+def effective_class(row) -> str:
+    """Your adjudication, when you've recorded one, overrides the model's call."""
+    return (row.get("human_label") or row.get("classification") or "").lower()
+
+
 def _card(row: dict) -> str:
-    cls = (row.get("classification") or "benign").lower()
+    cls = effective_class(row) or "benign"
     pkg = row.get("package") or ""
     ver = row.get("version") or ""
     e = html.escape
@@ -67,6 +72,13 @@ def _card(row: dict) -> str:
     reason_html = f'<div class="reason">{e(reasoning)}</div>' if reasoning else ""
     cited_html = (f'<div class="cited"><span class="k">cited</span> {e(cited)}</div>'
                   if cited else "")
+    human = row.get("human_label")
+    human_html = ""
+    if human:
+        note = row.get("human_note") or ""
+        model_cls = (row.get("classification") or "?").lower()
+        human_html = (f'<div class="human">your verdict: {e(human)}{" — " + e(note) if note else ""}'
+                      f'{f" · model said {e(model_cls)}" if model_cls != human.lower() else ""}</div>')
     triage = row.get("triage_score")
     triage_html = (f'<span class="k">triage</span><span class="v">{int(triage)}</span>'
                    if triage is not None else "")
@@ -81,6 +93,7 @@ def _card(row: dict) -> str:
     {attack_html}
     <span class="k">model</span><span class="v">{e(row.get('model') or '?')}</span>
   </div>
+  {human_html}
   {reason_html}
   {cited_html}
   <div class="actions">{''.join(actions)}</div>
@@ -106,6 +119,7 @@ h1{font-size:24px;letter-spacing:-.3px}.sub{color:var(--muted);margin:6px 0 28px
 .meta .k{color:var(--muted);text-transform:uppercase;letter-spacing:.5px;font-size:11px}
 .meta .v{font-family:var(--mono);margin-right:8px}
 .reason{background:#0d1117;border:1px solid var(--line);border-radius:8px;padding:12px 14px;font-size:14px;line-height:1.55;color:#c9d1d9}
+.human{margin-bottom:10px;font-size:13px;color:var(--ink);font-weight:600}
 .cited{margin-top:8px;font-size:12.5px;color:var(--muted);font-family:var(--mono)}
 .actions{display:flex;gap:10px;margin-top:14px}
 .btn{font-size:13px;font-weight:600;text-decoration:none;padding:8px 14px;border-radius:8px;border:1px solid var(--line);color:var(--ink)}
@@ -124,7 +138,7 @@ footer{color:var(--muted);font-size:12.5px;margin-top:28px;text-align:center}
 
 
 def _rank(row) -> int:
-    cls = (row.get("classification") or "").lower()
+    cls = effective_class(row)
     return {"malicious": 0, "suspicious": 1}.get(cls, 2)
 
 
@@ -160,7 +174,7 @@ def _status_strip(status: dict) -> str:
 def render_dashboard(rows, status: dict = None, generated_at: str = "") -> str:
     # flagged-first, independent of caller ordering (stable within each class).
     rows = sorted((dict(r) for r in rows), key=_rank)
-    flagged = sum(1 for r in rows if (r.get("classification") or "").lower() in _FLAGGED)
+    flagged = sum(1 for r in rows if effective_class(r) in _FLAGGED)
     cards = "\n".join(_card(dict(r)) for r in rows) if rows else \
         '<div class="empty">No verdicts yet. Run <code>npmdiffwatch run</code> first.</div>'
     gen = f" · generated {html.escape(generated_at)}" if generated_at else ""

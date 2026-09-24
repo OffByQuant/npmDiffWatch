@@ -341,9 +341,9 @@ def all_verdicts(conn):
         """SELECT r.id AS release_id, r.package, r.version, r.prior_version,
                   r.is_first_release, r.triage_score,
                   v.classification, v.confidence, v.attack_type, v.reasoning,
-                  v.cited_hunk, v.model, v.urgent, v.created_at, v.human_label
+                  v.cited_hunk, v.model, v.urgent, v.created_at, v.human_label, v.human_note
            FROM releases r JOIN verdicts v ON v.release_id = r.id
-           ORDER BY CASE v.classification WHEN 'malicious' THEN 0
+           ORDER BY CASE COALESCE(v.human_label, v.classification) WHEN 'malicious' THEN 0
                     WHEN 'suspicious' THEN 1 ELSE 2 END, r.id DESC""").fetchall()
 
 def adjudicate(conn, release_id, label, note):

@@ -653,7 +653,7 @@ def export_dashboard(cfg: Config, out_path=None, generated_at: str = ""):
         "last_serial": cur["last_serial"] if cur else None,
         "last_poll_age": age, "stale": stale,
         "releases_total": releases_total, "verdicts_total": len(rows),
-        "flagged_total": sum(1 for r in rows if (r.get("classification") or "").lower() in _FLAGGED),
+        "flagged_total": sum(1 for r in rows if dashboard.effective_class(r) in _FLAGGED),
         "reviewer": reviewer_label, "model_reachable": reachable, "pending_review": pending_review,
         "guard": guard_status(cfg),
         "watchlist": _watchlist_status(cfg),
