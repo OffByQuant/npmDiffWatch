@@ -252,6 +252,26 @@ npmdiffwatch -c npmdiffwatch.toml run
 its prior version, scores it with the ruleset, and escalates anything ≥ `threshold_t` to the reviewer.
 Clear-malicious verdicts alert immediately; borderline "suspicious" ones queue for your judgement.
 
+**What the reviewer is shown, and how it decides.** Each flagged release is sent as the changed code,
+the `package.json` changes, where the rules fired, and the package's description. All of it is written
+by the package author, so all of it sits between random per-request markers the model is told to treat
+as data, never as instructions. The description is context only: it can explain a change, but a release
+whose only reviewable content is its description isn't sent at all. The verdict follows an evidence
+standard. It is `malicious` only when the shown code concretely:
+
+- **exfiltrates**: reads secrets the package didn't create (environment tokens, `~/.npmrc`, `~/.ssh`,
+  `~/.aws`, other tools' credentials, browser or wallet data) and sends them off the machine;
+- **runs remote or hidden code**: downloads code and runs it, or decodes a payload and runs it;
+- **destroys or persists**: deletes or encrypts user files, or installs itself into shell profiles, cron
+  or other tools' hooks without being asked.
+
+Without one of these, `child_process`, `eval`, network calls and file writes are `benign`; `suspicious`
+means the code points at one of them but a needed piece isn't shown.
+
+**Binaries and large files** (native addons, WebAssembly, oversized or foreign-language files) are
+flagged only when the release adds or changes them. Each is compared by SHA-256 with the previous
+version, so a bundle republished unchanged by CI doesn't raise an alert.
+
 **Triage the queue:**
 
 ```bash
@@ -313,6 +333,21 @@ npmdiffwatch -c frontier.toml review-pending --reason too_large --limit 10
 larger `max_input_chars`. `pending` shows the queue counts; the dashboard shows them in its status strip.
 A release with **no** reviewable text at all (only binary / oversized-member / ownership signals) is not
 queued: no model can review it, so it goes straight to `pending` for a human.
+
+**When a release can't be scanned.** Two cases are made visible rather than dropped:
+
+- **Refused tarball.** A tarball over the size limits, with a file path that escapes the package, or that
+  isn't a readable gzip is never unpacked. It still raises an alert marked
+  `UNREVIEWED: npmdiffwatch refused to unpack this tarball (<reason>) … Needs manual review.` and goes to
+  `pending`. Oversized or malformed archives are a known way to hide a payload from scanners, so treat
+  these as a cue to look deeper.
+- **Package metadata that fails to download** (a timeout or a registry error; a package deleted from npm
+  is simply skipped) is retried on the next scans. After 4 attempts the release is given up on, and
+  `pending` says so: `package metadata failed to download: 2 release(s) being retried, 1 given up on
+  after 4 attempts (not scanned)`.
+
+Downloads have a total deadline (`fetch_deadline_s`, 120 s; `packument_deadline_s`, 300 s for package
+metadata), so one stalled download can't hold up a scan.
 
 **Model protection.** The reviewer measures your endpoint and adapts to it, so a slow or struggling
 model server isn't overloaded:
@@ -561,9 +596,13 @@ jobs:
 
 All state lives under `.diffwatch/` (paths configurable via `db_path`, `cache_dir`, `lock_path`):
 
-- `diffwatch.sqlite` — the cursor, every processed release, verdicts, alerts, and stored payload evidence.
-- `artifact_cache/` — downloaded `.tgz` tarballs (size-capped, read in memory, never installed).
+- `diffwatch.sqlite` — the cursor, every processed release, verdicts, alerts, and stored payload evidence
+  (compressed, and pruned daily as described in §5).
 - `diffwatch.lock` — an exclusive `flock` that prevents overlapping `run`s.
+- `diffwatch.lock.review` — the lock that lets only one process at a time send reviews to the model.
+- `dashboard.html` — the dashboard, rewritten after each `watch` scan.
+
+No tarball is written to disk: each is downloaded and read in memory only.
 
 Persist `.diffwatch/` and you can move NpmDiffWatch between machines without losing the cursor or history.
 The download/extraction caps (`max_download_bytes`, `max_member_bytes`, `max_total_bytes`,
@@ -591,6 +630,14 @@ webhook_url = "https://hooks.slack.com/services/XXX/YYY/ZZZ"
 
 Alerts are also printed to stdout and recorded (deduped) in the DB, so a webhook failure never loses one.
 
+Each alert names how it was reached:
+
+| alert | meaning |
+|---|---|
+| `malicious` with a `model=` name | the reviewer's verdict; `cited_hunk` is the code it rests on. The model's `suspicious` calls go to `pending` instead |
+| `suspicious-heuristic` with a score | the rules fired and no model reviewed it (heuristic-only mode, §10) |
+| `suspicious-heuristic` with `UNREVIEWED: …` | nothing could be shown to a model: a refused tarball (§5), or flagged content with no reviewable text. Needs manual review |
+
 ---
 
 ## 10. Heuristic-only mode (no LLM)
@@ -617,6 +664,9 @@ GPU and no API budget, or to keep monitoring when your endpoint is down.
 | DeepSeek verdicts arrive with empty `reasoning`/`cited_hunk` or `attack_type: none` | the response truncated — reasoning ate the output budget. Raise `max_output_tokens` (try 32000) and/or disable thinking via `[reviewer.extra_body]`. The `classification` still survives. |
 | First `run` returns `processed 0 releases` | expected — a fresh DB seeds the cursor to "now" and processes nothing that tick; the next tick polls forward. Use `run --backfill` to process history instead. |
 | `a scan is already running …` | another run holds the lock — the message names the holder pid and the lock file. If it's your scheduled tick, harmless; space the schedule. If nothing is actually running, a prior run hung or was killed mid-fetch and still holds the lock: kill the reported pid and re-run. The lock is an OS advisory lock that frees when its process exits — deleting the lock file does **not** release a live lock. |
+| `config file not found: …` | the `-c` path doesn't exist. It stops on purpose: running on the built-in defaults would write to the default database. Check the path. |
+| `package metadata failed to download: …` in `pending` | registry errors or timeouts. Those releases are retried on the next scans and given up on after 4 attempts; a steady count points at your network or a proxy. |
+| `watch` never catches up; the backlog grows | reviews run inside the scan loop, so a full-firehose run on one local model can cover fewer changes than npm publishes at busy times. Use a watchlist (§6), a faster model, or accept the lag. |
 | Local endpoint refused / connection error | the model server isn't up, or `base_url` is wrong (check the port and the trailing `/v1`). From Docker, use `host.docker.internal`, not `localhost`. |
 
 ---
