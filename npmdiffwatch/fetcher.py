@@ -46,6 +46,14 @@ def _strip_top(name): return name.split("/", 1)[1] if "/" in name else name
 def _unsafe(name): return name.startswith("/") or ".." in name.split("/")
 
 
+def _sha256_of(fileobj) -> str:
+    """Fingerprint a member without holding it in memory (an oversized source can be up to max_member_bytes)."""
+    h = hashlib.sha256()
+    while chunk := fileobj.read(1 << 20):
+        h.update(chunk)
+    return h.hexdigest()
+
+
 def extract_tgz(blob: bytes, cfg: Config):
     files: dict[str, bytes] = {}
     binaries: list[dict] = []
@@ -87,14 +95,15 @@ def extract_tgz(blob: bytes, cfg: Config):
             if _is_source(m.name) and m.size <= cfg.max_source_file_bytes:
                 files[rel] = tar.extractfile(m).read(cfg.max_source_file_bytes + 1)
             elif _is_source(m.name):
-                binaries.append({"path": rel, "size": m.size, "reason": "source-too-large"})
+                binaries.append({"path": rel, "size": m.size, "reason": "source-too-large",
+                                 "sha256": _sha256_of(tar.extractfile(m))})
             elif _is_strict_binary(m.name):
                 data = tar.extractfile(m).read()
                 binaries.append({"path": rel, "sha256": hashlib.sha256(data).hexdigest(),
                                  "size": m.size})
             elif (fext := _foreign_ext(m.name)) and foreign < cfg.max_foreign_files:
                 binaries.append({"path": rel, "size": m.size, "ext": fext,
-                                 "reason": "foreign-language-source"})
+                                 "reason": "foreign-language-source", "sha256": _sha256_of(tar.extractfile(m))})
                 foreign += 1
 
     return files, binaries, has_lockfile, has_shrinkwrap
@@ -305,6 +314,7 @@ def fetch_artifacts(cfg, rel: NewRelease) -> ArtifactSet | None:
     new_files, new_bins, has_lockfile, has_shrinkwrap = extract_tgz(tgz_bytes, cfg)
 
     prior_files: dict[str, bytes] = {}
+    prior_bins = None
     prior_ver = None
     dep_findings: list[dict] = []
 
@@ -317,7 +327,11 @@ def fetch_artifacts(cfg, rel: NewRelease) -> ArtifactSet | None:
             prior_tgz = _fetch_url(prior_url, cfg)
             prior_files, prior_bins, _, _ = extract_tgz(prior_tgz, cfg)
         except Exception:
-            prior_files = {}
+            prior_files, prior_bins = {}, None
+        if prior_bins is not None:
+            # Only what this release adds or changes is a signal; an unchanged bundle republished by CI is not.
+            same = {(b["path"], b.get("sha256")) for b in prior_bins if b.get("sha256")}
+            new_bins = [b for b in new_bins if (b["path"], b.get("sha256")) not in same]
         pred_ver_data = versions.get(prior_ver)
         dep_findings = _screen_added_deps(new_ver_data, rel.package, prior_ver, pred_ver_data, cfg)
 
