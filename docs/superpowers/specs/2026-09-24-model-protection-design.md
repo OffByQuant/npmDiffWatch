@@ -134,7 +134,8 @@ below `slowdown_ratio × tok_s` (default 0.3) **twice in a row**:
   half-open probe;
 - print `reviewer endpoint X is running at N% of its measured speed — the model server is likely short
   on memory or swapping; consider restarting it`;
-- leave the slow samples out of `tok_s`, so a degrading server can't lower its own baseline.
+- leave the slow samples out of `tok_s`, so a degrading server can't lower its own baseline;
+- post the same message to `webhook_url` when one is configured (§9, decision 2).
 
 Two consecutive slow reviews avoids tripping on one unusually heavy input.
 
@@ -227,10 +228,10 @@ One PR per repo: npmDiffWatch first, then the PyDiffWatch port. The two share th
 store design. No migration beyond the new table. Existing configs keep working: every new key has a
 default, and `max_input_chars` keeps its meaning as the upper limit.
 
-## 9. Open questions for review
+## 9. Decisions at review (2026-09-24)
 
-1. `budget_safety = 0.6` means a near-cap review uses at most ~60 % of the timeout. Tighter (0.5) or looser (0.75)?
-2. Should `degraded` also print a desktop notification or webhook alert (the notifier already supports a
-   webhook), or is the log / dashboard warning enough?
-3. The calibration prompt costs one request per new endpoint and model (~50 s on last night's Qwen, seconds on a GPU).
-   Acceptable, or calibrate lazily from the first real review instead (and keep the 40k cold-start cap until then)?
+1. `budget_safety = 0.6`, to be checked on the first live run against the RTX llama-swap endpoint.
+2. A `degraded` trip also posts the configured webhook (`webhook_url`), in addition to the log and
+   dashboard warning.
+3. Calibrate with one request per new endpoint and model, as in §5.3, with tests for success, failure, and
+   reuse of stored measurements.
