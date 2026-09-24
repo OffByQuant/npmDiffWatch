@@ -75,8 +75,8 @@ def extract_tgz(blob: bytes, cfg: Config):
             count += 1
             if count > cfg.max_members:
                 raise RefusedToExtract("members")
-            if len(m.name) > cfg.max_name_bytes:
-                raise RefusedToExtract("member-name")
+            if len(m.name) > cfg.max_name_bytes or not m.name.isprintable():
+                raise RefusedToExtract("member-name")     # control characters in a path: never legitimate
             if not m.isfile():
                 continue
             if _unsafe(m.name):
