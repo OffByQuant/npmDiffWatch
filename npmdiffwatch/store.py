@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS verdicts(id INTEGER PRIMARY KEY,
   attack_type TEXT, reasoning TEXT, cited_hunk TEXT, model TEXT, urgent INTEGER,
   created_at TEXT, human_label TEXT, human_note TEXT, adjudicated_at TEXT);
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE IF NOT EXISTS watchlist_baseline(package TEXT PRIMARY KEY, result TEXT, done_at TEXT);
 CREATE TABLE IF NOT EXISTS feed_retry(package TEXT PRIMARY KEY, seq INTEGER, attempts INTEGER,
     gave_up INTEGER DEFAULT 0, updated_at TEXT);
 CREATE TABLE IF NOT EXISTS reviewer_stats(endpoint TEXT, model TEXT, tok_s REAL, chars_per_token REAL,
@@ -240,6 +241,22 @@ def feed_retries_due(conn, limit=20):
 def feed_retry_counts(conn) -> dict:
     r = conn.execute("SELECT COALESCE(SUM(gave_up=0),0), COALESCE(SUM(gave_up=1),0) FROM feed_retry").fetchone()
     return {"retrying": r[0], "gave_up": r[1]}
+
+def _baselined(conn) -> set:
+    return {r[0] for r in conn.execute("SELECT package FROM watchlist_baseline WHERE result != 'fetch_failed'")}
+
+def baseline_pending(conn, names, limit):
+    """Listed packages whose latest release hasn't been reviewed yet (fetch_failed ones are retried)."""
+    return sorted(set(names) - _baselined(conn))[:limit]
+
+def mark_baseline(conn, package, result):
+    conn.execute("INSERT INTO watchlist_baseline(package, result, done_at) VALUES(?,?,?) ON CONFLICT(package) "
+                 "DO UPDATE SET result=excluded.result, done_at=excluded.done_at", (package, result, _now()))
+    conn.commit()
+
+def baseline_counts(conn, names) -> tuple:
+    names = set(names)
+    return len(names & _baselined(conn)), len(names)
 
 def pending_review_counts(conn) -> dict:
     return dict(conn.execute("SELECT pending_reason, count(*) FROM releases WHERE stage='pending_review' "
