@@ -137,6 +137,12 @@ def _rank_files(diff, triage):
 
 
 _DESC_HEADING = "--- package description (the author's claim; context, not evidence) ---"
+_LOC_HEADING = "flagged_locations:"
+
+
+def _one_line(s: str) -> str:
+    """An author-chosen string with control characters escaped, so it stays on one line."""
+    return "".join(c if c.isprintable() else repr(c)[1:-1] for c in s)
 
 
 def build_review_input(diff, triage, *, max_chars: int) -> str:
@@ -146,7 +152,7 @@ def build_review_input(diff, triage, *, max_chars: int) -> str:
 
     seen: list[str] = []
     for r in sorted(triage.fired_rules, key=lambda r: -r.weight):
-        loc = f"{r.file}:{r.lines[0]}-{r.lines[1]}"
+        loc = f"{_one_line(r.file)}:{r.lines[0]}-{r.lines[1]}"
         if r.file in ranked_set and loc not in seen:
             seen.append(loc)
     pkg_json_text = _render_pkg_json_changes(getattr(diff, "package_json_changes", []))
@@ -154,7 +160,7 @@ def build_review_input(diff, triage, *, max_chars: int) -> str:
         f"package: {diff.package}\nversion: {diff.version}\n"
         f"is_first_release: {diff.is_first_release}"
         + (" (FIRST RELEASE - whole-package scan, no prior baseline)" if diff.is_first_release else "")
-        + f"\ntriage_score: {triage.score:.0f}\nflagged_locations: {', '.join(seen)}\n"
+        + f"\ntriage_score: {triage.score:.0f}\n"
         + f"untrusted_content_marker: {marker}\n"
         + f"\n{marker}\n"
     )
@@ -162,8 +168,11 @@ def build_review_input(diff, triage, *, max_chars: int) -> str:
     # package.json values (description, scripts, dependency names) are author-written: they go inside the markers.
     desc = getattr(diff, "description", "")
     desc_text = f"{_DESC_HEADING}\n  {desc}" if desc else ""
-    body_parts = [p for p in (desc_text, pkg_json_text) if p]
-    used, truncated = len(header) + len(marker) + len(TRUNCATION_NOTE) + len(desc_text) + len(pkg_json_text), False
+    # File paths are author-chosen (tar member names), so the flagged locations are fenced too.
+    loc_text = f"{_LOC_HEADING} {', '.join(seen)}" if seen else ""
+    body_parts = [p for p in (loc_text, desc_text, pkg_json_text) if p]
+    used, truncated = (len(header) + len(marker) + len(TRUNCATION_NOTE) + len(loc_text) + len(desc_text)
+                       + len(pkg_json_text)), False
     for path in ranked_paths:
         rendered = _render_file(by_path[path])
         if used + len(rendered) + 1 > max_chars:
@@ -227,6 +236,8 @@ def _has_reviewable_content(review_input: str) -> bool:
     package.json changes."""
     marker = _marker_of(review_input)
     _, pkg_json, body, _ = review_input.split(marker, 3)
+    if body.lstrip().startswith(_LOC_HEADING):     # where triage looked is not content either
+        body = body.lstrip().split("\n", 1)[1] if "\n" in body.lstrip() else ""
     if body.lstrip().startswith(_DESC_HEADING):    # the author's claim alone is nothing to review
         body = body.lstrip().split("\n", 2)[2] if body.lstrip().count("\n") >= 2 else ""
     return bool(pkg_json.strip() or body.strip())
