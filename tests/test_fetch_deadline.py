@@ -30,7 +30,7 @@ def _trickling(monkeypatch):
     clock = [0.0]
     monkeypatch.setattr(fetcher.time, "monotonic", lambda: clock[0])
     monkeypatch.setattr(fetcher.urllib.request, "urlopen", lambda *a, **k: _Trickle(clock))
-    return dataclasses.replace(Config(), fetch_deadline_s=120.0), clock
+    return dataclasses.replace(Config(), fetch_deadline_s=120.0, packument_deadline_s=300.0), clock
 
 
 def test_tarball_download_gives_up_at_the_deadline(monkeypatch):
@@ -46,11 +46,11 @@ def test_tarball_download_gives_up_at_the_deadline(monkeypatch):
 def test_packument_fetch_gives_up_at_the_deadline(monkeypatch):
     cfg, clock = _trickling(monkeypatch)
     assert fetcher._fetch_json("https://registry.npmjs.org/x", cfg) == {}
-    assert clock[0] <= 130.0
+    assert clock[0] <= 310.0          # package metadata gets packument_deadline_s
 
 
 def test_feed_packument_fetch_gives_up_at_the_deadline(monkeypatch):
     cfg, clock = _trickling(monkeypatch)
     monkeypatch.setattr(ingest.urllib.request, "urlopen", lambda *a, **k: _Trickle(clock))
     assert ingest._fetch_json("https://registry.npmjs.org/x", cfg) == {}
-    assert clock[0] <= 130.0
+    assert clock[0] <= 310.0

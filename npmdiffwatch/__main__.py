@@ -1,10 +1,10 @@
 import argparse
 import dataclasses
-from . import egress
+from . import egress, store
 from .config import Config, load_config
 from .orchestrator import (run_once, seed_now, list_pending, adjudicate, get_evidence,
                            backfill_evidence, export_dashboard, watch, review_pending,
-                           pending_review_counts, prune, guard_status)
+                           pending_review_counts, prune, guard_status, feed_retry_counts)
 from .guard import describe
 
 
@@ -123,6 +123,10 @@ def main():
         gs = guard_status(cfg)
         if gs:
             print(f"[npmdiffwatch] reviewer: {describe(gs)}")
+        fr = feed_retry_counts(cfg)
+        if fr["retrying"] or fr["gave_up"]:
+            print(f"[npmdiffwatch] package metadata failed to download: {fr['retrying']} release(s) being retried, "
+                  f"{fr['gave_up']} given up on after {1 + store.FEED_RETRIES} attempts (not scanned)")
         queued = pending_review_counts(cfg)
         if queued:
             print(f"[npmdiffwatch] {sum(queued.values())} release(s) queued for LLM review ("

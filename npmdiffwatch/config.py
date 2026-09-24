@@ -45,6 +45,7 @@ class Config:
     max_package_json_bytes: int = 100_000
     fetch_timeout_s: float = 30.0     # per socket read
     fetch_deadline_s: float = 120.0   # per download, total
+    packument_deadline_s: float = 300.0   # package metadata can be tens of MB
     max_releases_per_run: int = 200
     fetch_concurrency: int = 4
     new_package_policy: str = "surface"

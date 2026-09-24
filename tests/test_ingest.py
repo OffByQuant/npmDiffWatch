@@ -112,9 +112,11 @@ def test_changes_url_targets_replicate_feed_with_since_and_limit():
 
 def _conn_with(package, versions):
     import sqlite3
+    from npmdiffwatch import store
     conn = sqlite3.connect(":memory:")
-    conn.execute("CREATE TABLE releases(package TEXT, version TEXT)")
-    conn.executemany("INSERT INTO releases VALUES (?, ?)", [(package, v) for v in versions])
+    conn.row_factory = sqlite3.Row
+    store.init_schema(conn)
+    conn.executemany("INSERT INTO releases(package, version) VALUES (?, ?)", [(package, v) for v in versions])
     return conn
 
 

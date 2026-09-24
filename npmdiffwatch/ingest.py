@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 
 from .config import Config
 from .models import NewRelease
-from . import egress
+from . import egress, store
 from .fetcher import read_body
 
 logger = logging.getLogger(__name__)
@@ -31,7 +31,7 @@ def _fetch_json(url: str, cfg: Config) -> dict | None:
     req = urllib.request.Request(url, headers={"User-Agent": "npmdiffwatch/0.1"})
     try:
         with urllib.request.urlopen(req, timeout=cfg.fetch_timeout_s) as r:
-            return json.loads(read_body(r, cfg))
+            return json.loads(read_body(r, cfg, deadline=cfg.packument_deadline_s))
     except urllib.error.HTTPError as e:
         if e.code == 404:
             return None
@@ -106,6 +106,7 @@ def changes_since(cfg: Config, since_serial: int, conn=None, *, limit: int | Non
         return ChangesPage(releases, watermark)
 
     rows = []
+    page_names = set()
     for row in data.get("results", []):
         seq = row.get("seq")
         if isinstance(seq, int) and seq > watermark:
@@ -116,6 +117,10 @@ def changes_since(cfg: Config, since_serial: int, conn=None, *, limit: int | Non
         if not name or not isinstance(seq, int):
             continue
         rows.append((name, seq))
+        page_names.add(name)
+    if conn is not None:
+        # Packages whose metadata failed to download on an earlier tick. The page may already carry them.
+        rows += [(r["package"], since_serial) for r in store.feed_retries_due(conn) if r["package"] not in page_names]
 
     # Packument fetches dominate a tick (~1s each); run them concurrently. Version resolution reads
     # the DB, so it stays on this thread. Each packument is resolved and dropped as it arrives rather
@@ -123,6 +128,11 @@ def changes_since(cfg: Config, since_serial: int, conn=None, *, limit: int | Non
     with ThreadPoolExecutor(max_workers=max(1, cfg.fetch_concurrency)) as ex:
         fetched = ex.map(lambda r: _fetch_json(_packument_url(r[0], cfg), cfg), rows)
         for (name, seq), packument in zip(rows, fetched):
+            if conn is not None:
+                if packument == {}:   # download failed (a 404 is None): keep it for the next tick, never drop it
+                    store.note_feed_failure(conn, name, seq)
+                    continue
+                store.clear_feed_retry(conn, name)
             version = _newest_unseen_version(packument, name, conn)
             if version is None:
                 continue
