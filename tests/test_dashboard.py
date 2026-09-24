@@ -133,3 +133,31 @@ def test_render_shows_reviewer_guard_state():
         "host_memory": "swap 83% used"}))
     assert "reviews paused (timeout)" in html and "85 tok/s" in html and "52,020" in html
     assert "swap 83% used" in html
+
+
+def test_your_benign_judgement_overrides_the_models_malicious_call():
+    rows = [_row("cleared-cli", "1.0.0", "malicious", human_label="benign",
+                 human_note="first-party telemetry; no exfiltration"),
+            _row("nice-pkg", "2.0.0", "benign")]
+    html = dashboard.render_dashboard(rows)
+    card = html[html.index("cleared-cli") - 300:html.index("nice-pkg")]
+    assert 'class="card benign"' in card and 'class="badge benign"' in card
+    assert "Report malware on npm" not in card
+    assert "first-party telemetry; no exfiltration" in card and "model said malicious" in card
+    assert "0 flagged" in html
+
+
+def test_your_malicious_judgement_flags_a_release_the_model_cleared():
+    html = dashboard.render_dashboard([_row("sneaky", "1.0.0", "benign", human_label="malicious")])
+    assert 'class="badge malicious"' in html and "Report malware on npm" in html
+
+
+def test_the_status_strip_counts_your_judgement(tmp_path):
+    cfg = dataclasses.replace(Config(), db_path=tmp_path / "db.sqlite", lock_path=tmp_path / "l")
+    conn = store.connect(cfg); store.init_schema(conn)
+    rid = store.record_release(conn, "cleared-cli", "1.0.0", 1, False, None, "tgz")
+    store.record_verdict(conn, rid, Verdict("cleared-cli", "1.0.0", "malicious", 90.0, [], False, confidence=1.0,
+                                            attack_type="none", reasoning="", cited_hunk="", model="m"))
+    store.adjudicate(conn, rid, "benign", "cleared")
+    out = orchestrator.export_dashboard(cfg, tmp_path / "d.html")
+    assert "0 flagged" in Path(out).read_text()
