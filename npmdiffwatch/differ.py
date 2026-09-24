@@ -14,12 +14,29 @@ _JSON_FIELDS = {"name", "version", "description", "main", "bin", "scripts",
                 "type", "exports", "imports", "engines"}
 
 
+def _json_object(raw: bytes | None) -> dict:
+    """An author-written JSON file as a dict: {} when it is missing, broken or not an object. Parsing the bytes
+    (not decoded text) accepts a UTF-8 byte-order mark. Never raises: a release that fails to process holds
+    the cursor, so one bad file would stall the scan."""
+    if not raw:
+        return {}
+    try:
+        value = json.loads(raw)
+    except (ValueError, UnicodeDecodeError, RecursionError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _dict(value) -> dict:
+    return value if isinstance(value, dict) else {}
+
+
 def _diff_json(old_bytes: bytes | None, new_bytes: bytes | None) -> tuple[list[PkgJsonChange], frozenset]:
-    old = json.loads(old_bytes.decode("utf-8", errors="replace")) if old_bytes else {}
-    new_json = json.loads(new_bytes.decode("utf-8", errors="replace")) if new_bytes else {}
+    old = _json_object(old_bytes)
+    new_json = _json_object(new_bytes)
     changes = []
-    old_scripts = old.get("scripts", {}) or {}
-    new_scripts = new_json.get("scripts", {}) or {}
+    old_scripts = _dict(old.get("scripts"))
+    new_scripts = _dict(new_json.get("scripts"))
     changed_scripts = set()
     for hook in ("preinstall", "install", "postinstall", "prepare", "prepublish"):
         old_val = old_scripts.get(hook)
@@ -38,36 +55,21 @@ def _diff_json(old_bytes: bytes | None, new_bytes: bytes | None) -> tuple[list[P
 def _diff_lockfile(old_bytes: bytes | None, new_bytes: bytes | None) -> tuple[bool, bool]:
     has_new = False
     has_integrity = False
-    old_pkgs: dict = {}
-    new_pkgs: dict = {}
-    if old_bytes:
-        try:
-            old_json = json.loads(old_bytes.decode("utf-8", errors="replace"))
-            old_pkgs = old_json.get("packages", {})
-        except (json.JSONDecodeError, ValueError):
-            pass
-    if new_bytes:
-        try:
-            new_json = json.loads(new_bytes.decode("utf-8", errors="replace"))
-            new_pkgs = new_json.get("packages", {})
-        except (json.JSONDecodeError, ValueError):
-            pass
+    old_pkgs = _dict(_json_object(old_bytes).get("packages"))
+    new_pkgs = _dict(_json_object(new_bytes).get("packages"))
     for pkg in new_pkgs:
         if pkg not in old_pkgs:
             has_new = True
         else:
-            old_int = old_pkgs[pkg].get("integrity")
-            new_int = new_pkgs[pkg].get("integrity")
+            old_int = _dict(old_pkgs[pkg]).get("integrity")
+            new_int = _dict(new_pkgs[pkg]).get("integrity")
             if old_int and new_int and old_int != new_int:
                 has_integrity = True
     return has_new, has_integrity
 
 
 def _description(new_files) -> str:
-    try:
-        d = json.loads(new_files.get("package.json") or b"{}").get("description")
-    except (ValueError, AttributeError):
-        return ""
+    d = _json_object(new_files.get("package.json")).get("description")
     return " ".join(d.split())[:500] if isinstance(d, str) else ""     # one line: it must not pose as a hunk
 
 
