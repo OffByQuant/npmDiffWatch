@@ -288,7 +288,7 @@ def fetch_artifacts(cfg, rel: NewRelease) -> ArtifactSet | None:
     if is_new and cfg.new_package_policy == "skip":
         return ArtifactSet(rel.package, rel.version, None, "tgz", {}, {}, {},
                            is_new_package=True, maintainer_metadata=mtmeta,
-                           packument_json=json.dumps(meta), scripts_field=scripts,
+                           scripts_field=scripts,
                            has_lockfile=False)
 
     tgz_bytes = _fetch_url(tarball_url, cfg)
@@ -315,5 +315,5 @@ def fetch_artifacts(cfg, rel: NewRelease) -> ArtifactSet | None:
                        new_files, prior_files, {}, new_bins,
                        is_new_package=is_new, maintainer_metadata=mtmeta,
                        added_dep_findings=dep_findings,
-                       packument_json=json.dumps(meta), scripts_field=scripts,
+                       scripts_field=scripts,
                        has_lockfile=has_lockfile, has_shrinkwrap=has_shrinkwrap)

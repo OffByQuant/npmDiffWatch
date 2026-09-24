@@ -257,6 +257,16 @@ npmdiffwatch -c npmdiffwatch.toml capture-evidence --release-id <id>
 npmdiffwatch -c npmdiffwatch.toml capture-evidence --all           # widen to every fired-rule row (more re-fetches)
 ```
 
+**Keeping the database small.** Older versions stored npm's full metadata document (packument) for
+every release — up to 65 MB each, never read — which grew a busy database by ~0.5 GB/hour. It is no longer
+stored. For a database created before this change:
+
+```bash
+npmdiffwatch -c npmdiffwatch.toml prune     # clear stored packuments and compact; verdicts and evidence stay
+```
+
+No package tarballs are ever written to disk: they are downloaded and extracted in memory only.
+
 **The LLM-review queue.** Review never blocks the scan. When the reviewer can't handle a flagged release,
 the release is parked with a reason and the cursor moves on; the review input is stored (compressed) so a
 later review doesn't depend on npm still hosting the tarball.

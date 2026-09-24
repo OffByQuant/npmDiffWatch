@@ -81,11 +81,8 @@ def update_release_metadata(conn, release_id, maintainer_metadata_json):
                  (maintainer_metadata_json, release_id))
     conn.commit()
 
-def update_npm_metadata(conn, release_id, packument_json=None, scripts_json=None,
-                        has_lockfile=None, has_shrinkwrap=None):
+def update_npm_metadata(conn, release_id, scripts_json=None, has_lockfile=None, has_shrinkwrap=None):
     sets, params = [], []
-    if packument_json is not None:
-        sets.append("packument_json=?"); params.append(packument_json)
     if scripts_json is not None:
         sets.append("scripts_json=?"); params.append(scripts_json)
     if has_lockfile is not None:
@@ -97,6 +94,14 @@ def update_npm_metadata(conn, release_id, packument_json=None, scripts_json=None
     params.append(release_id)
     conn.execute(f"UPDATE releases SET {', '.join(sets)} WHERE id=?", params)
     conn.commit()
+
+def prune(conn):
+    """Clear packuments stored by versions that kept them (never read; up to 65 MB each), then
+    compact the file. Verdicts, evidence and queued review inputs are kept."""
+    conn.execute("UPDATE releases SET packument_json=NULL WHERE packument_json IS NOT NULL")
+    conn.commit()
+    conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    conn.execute("VACUUM")
 
 def update_evidence(conn, release_id, evidence_text):
     conn.execute("UPDATE releases SET evidence=? WHERE id=?", (evidence_text, release_id))

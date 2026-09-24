@@ -3,7 +3,7 @@ from . import egress
 from .config import Config, load_config
 from .orchestrator import (run_once, seed_now, list_pending, adjudicate, get_evidence,
                            backfill_evidence, export_dashboard, watch, review_pending,
-                           pending_review_counts)
+                           pending_review_counts, prune)
 
 
 def _cfg(args):
@@ -39,6 +39,8 @@ def main():
                    help="set the cursor to now and exit (start monitoring from now)")
     sub.add_parser("pending",
                    help="list suspicious verdicts awaiting adjudication, each with its diff")
+    sub.add_parser("prune", help="shrink the database: clear stored npm packuments (kept by older "
+                                 "versions, never read) and compact the file; verdicts and evidence stay")
     rpp = sub.add_parser("review-pending",
                          help="review releases queued for LLM review (by default: too_large and exhausted "
                               "retries) — e.g. with -c pointing at a larger-context model")
@@ -93,6 +95,8 @@ def main():
         s = seed_now(cfg)
         print(f"[npmdiffwatch] cursor seeded to serial {s}" if s is not None
               else "[npmdiffwatch] could not reach npm registry to read the current serial")
+    elif args.cmd == "prune":
+        print(f"[npmdiffwatch] pruned {cfg.db_path}: freed {prune(cfg) / 1048576:.1f} MB")
     elif args.cmd == "review-pending":
         n, remaining = review_pending(cfg, reasons=args.reason, limit=args.limit)
         left = ", ".join(f"{k}: {v}" for k, v in sorted(remaining.items())) or "none"

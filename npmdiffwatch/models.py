@@ -15,7 +15,6 @@ class ArtifactSet:
     is_new_package: bool = False
     maintainer_metadata: dict | None = None
     added_dep_findings: list[dict] = field(default_factory=list)
-    packument_json: str | None = None
     scripts_field: dict | None = None
     has_lockfile: bool = False
     has_shrinkwrap: bool = False

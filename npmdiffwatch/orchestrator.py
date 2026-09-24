@@ -144,12 +144,10 @@ def _process_fetched(cfg, conn, rvw, ruleset, rel, result, offline=False) -> boo
     store.set_baseline(conn, rid, result.prior_version, result.is_new_package)
     if result.maintainer_metadata is not None:
         store.update_release_metadata(conn, rid, json.dumps(result.maintainer_metadata))
-    if result.packument_json is not None or result.scripts_field is not None:
-        store.update_npm_metadata(conn, rid,
-                                  packument_json=result.packument_json,
-                                  scripts_json=json.dumps(result.scripts_field) if result.scripts_field else None,
-                                  has_lockfile=result.has_lockfile,
-                                  has_shrinkwrap=result.has_shrinkwrap)
+    store.update_npm_metadata(conn, rid,
+                              scripts_json=json.dumps(result.scripts_field) if result.scripts_field else None,
+                              has_lockfile=result.has_lockfile,
+                              has_shrinkwrap=result.has_shrinkwrap)
     if result.is_new_package and cfg.new_package_policy == "skip":
         store.update_stage(conn, rid, "new_package_skipped")
         return True
@@ -287,6 +285,19 @@ def review_pending(cfg: Config, reasons=None, limit=None):
         return n, store.pending_review_counts(conn)
     finally:
         conn.close()
+
+
+def prune(cfg: Config) -> int:
+    """Shrink the scan database (see store.prune). Returns bytes freed on disk."""
+    def size():
+        return sum(p.stat().st_size for p in cfg.db_path.parent.glob(cfg.db_path.name + "*"))
+    before = size()
+    conn = store.connect(cfg); store.init_schema(conn)
+    try:
+        store.prune(conn)
+    finally:
+        conn.close()
+    return before - size()
 
 
 def pending_review_counts(cfg: Config) -> dict:
