@@ -16,6 +16,8 @@ class ReviewerConfig:
     max_pending_per_tick: int = 20     # queued reviews retried at the start of each tick
     budget_safety: float = 0.6         # a review may be predicted to use at most this share of `timeout`
     probe_timeout: float = 60.0        # health probe / calibration (covers llama-swap loading a model)
+    slowdown_ratio: float = 0.3        # a review below this share of measured speed counts as slow
+    degraded_pause_s: float = 900.0    # after two slow reviews in a row, pause this long before probing
     max_input_chars: int = 200_000
     max_output_tokens: int = 8192
     opus_escalation_confidence: float = 0.6

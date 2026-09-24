@@ -6,7 +6,7 @@ cron-driven `run` is a new process every tick)."""
 import logging
 import time
 
-from . import store
+from . import notifier, store
 from .backends import ReviewUnavailable
 from .reviewer import SYSTEM_PROMPT
 
@@ -128,6 +128,19 @@ class ReviewerGuard:
         rate = _rate(usage, secs, input_chars)
         if rate is None:
             return
+        if self.tok_s is not None and rate < self.rc.slowdown_ratio * self.tok_s:
+            self.slow_streak += 1                     # slow samples never lower the baseline
+            if self.slow_streak >= 2:
+                pct = 100 * rate / self.tok_s
+                self._set("degraded", "degraded", self.clock() + self.rc.degraded_pause_s)
+                msg = self._say(f"reviewer endpoint {self.endpoint} is running at {pct:.0f}% of its measured speed — "
+                                f"the model server is likely short on memory or swapping; consider restarting it. "
+                                f"Reviews pause for {self.rc.degraded_pause_s:.0f}s")
+                notifier.post_webhook(self.cfg, msg)
+            else:
+                self._save()
+            return
+        self.slow_streak = 0
         self.tok_s = rate if self.tok_s is None else (1 - EWMA) * self.tok_s + EWMA * rate
         if usage and usage.get("prompt_tokens", 0) >= MIN_SAMPLE_TOKENS:
             self.cpt = (1 - EWMA) * self.cpt + EWMA * (input_chars / usage["prompt_tokens"])
@@ -160,3 +173,4 @@ class ReviewerGuard:
         full = f"[npmdiffwatch] WARNING: {msg}"
         self.out(full)
         logger.warning(full)
+        return full

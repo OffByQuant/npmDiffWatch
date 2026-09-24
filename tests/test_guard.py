@@ -146,3 +146,44 @@ def test_status_and_describe(tmp_path):
     st = gd.status()
     assert st["state"] == "closed" and st["tok_s"] == 85.0 and st["host_memory"] is None
     assert "85 tok/s" in g.describe(st) and "input cap" in g.describe(st)
+
+
+def _u(tokens):
+    return {"prompt_tokens": tokens, "completion_tokens": 100}
+
+
+def test_single_slow_sample_does_not_trip_or_lower_baseline(tmp_path):
+    gd, said = _guard(tmp_path)
+    gd.tok_s = 100.0
+    gd.record_success(_u(10_000), secs=500.0, input_chars=34_000)     # 20 tok/s: e.g. llama-swap cold load
+    assert gd.admit() is None and gd.tok_s == 100.0
+    gd.record_success(_u(10_000), secs=100.0, input_chars=34_000)     # back to normal resets the streak
+    gd.record_success(_u(10_000), secs=500.0, input_chars=34_000)
+    assert gd.admit() is None
+
+
+def test_two_consecutive_slow_reviews_pause_with_a_warning(tmp_path):
+    clock = Clock()
+    be = Backend(clock)
+    gd, said = _guard(tmp_path, be, clock)
+    gd.tok_s = 100.0
+    gd.record_success(_u(10_000), secs=500.0, input_chars=34_000)
+    gd.record_success(_u(10_000), secs=500.0, input_chars=34_000)
+    assert gd.admit() == "degraded" and gd.tok_s == 100.0
+    assert any("20% of its measured speed" in s for s in said)
+    gd.begin_batch()                                   # still inside the pause: no probe
+    assert be.pings == []
+    clock.t += 901
+    gd.begin_batch()
+    assert gd.admit() is None and len(be.pings) == 1
+
+
+def test_degraded_also_posts_the_webhook(tmp_path, monkeypatch):
+    sent = []
+    monkeypatch.setattr(g.notifier, "post_webhook", lambda cfg, text: sent.append(text) or True)
+    gd, _ = _guard(tmp_path)
+    gd.tok_s = 100.0
+    gd.record_success(_u(10_000), secs=500.0, input_chars=34_000)
+    assert sent == []
+    gd.record_success(_u(10_000), secs=500.0, input_chars=34_000)
+    assert len(sent) == 1 and "measured speed" in sent[0]
