@@ -21,6 +21,8 @@ CREATE TABLE IF NOT EXISTS verdicts(id INTEGER PRIMARY KEY,
   release_id INTEGER UNIQUE, classification TEXT, confidence REAL,
   attack_type TEXT, reasoning TEXT, cited_hunk TEXT, model TEXT, urgent INTEGER,
   created_at TEXT, human_label TEXT, human_note TEXT, adjudicated_at TEXT);
+CREATE TABLE IF NOT EXISTS feed_retry(package TEXT PRIMARY KEY, seq INTEGER, attempts INTEGER,
+    gave_up INTEGER DEFAULT 0, updated_at TEXT);
 CREATE TABLE IF NOT EXISTS reviewer_stats(endpoint TEXT, model TEXT, tok_s REAL, chars_per_token REAL,
   samples INTEGER, state TEXT, detail TEXT, paused_until REAL, slow_streak INTEGER, updated_at TEXT,
   PRIMARY KEY(endpoint, model));
@@ -175,6 +177,28 @@ def pending_reviews(conn, reasons=None, max_chars=None):
 
 def review_input(row) -> str:
     return zlib.decompress(row["review_input"]).decode()
+
+FEED_RETRIES = 3     # retries after the first failure, then the release is given up on (visibly)
+
+
+def note_feed_failure(conn, package, seq):
+    now = datetime.datetime.now(datetime.UTC).isoformat()
+    conn.execute("INSERT INTO feed_retry(package, seq, attempts, updated_at) VALUES(?,?,1,?) "
+                 "ON CONFLICT(package) DO UPDATE SET attempts=attempts+1, updated_at=excluded.updated_at, "
+                 "gave_up=(attempts+1 > ?)", (package, seq, now, FEED_RETRIES))
+    conn.commit()
+
+def clear_feed_retry(conn, package):
+    conn.execute("DELETE FROM feed_retry WHERE package=? AND gave_up=0", (package,))
+    conn.commit()
+
+def feed_retries_due(conn, limit=20):
+    return conn.execute("SELECT package, seq, attempts FROM feed_retry WHERE gave_up=0 ORDER BY seq LIMIT ?",
+                        (limit,)).fetchall()
+
+def feed_retry_counts(conn) -> dict:
+    r = conn.execute("SELECT COALESCE(SUM(gave_up=0),0), COALESCE(SUM(gave_up=1),0) FROM feed_retry").fetchone()
+    return {"retrying": r[0], "gave_up": r[1]}
 
 def pending_review_counts(conn) -> dict:
     return dict(conn.execute("SELECT pending_reason, count(*) FROM releases WHERE stage='pending_review' "

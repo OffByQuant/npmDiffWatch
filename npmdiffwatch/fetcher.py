@@ -17,6 +17,7 @@ from . import quarantine, deps, egress
 
 class RefusedToExtract(Exception): ...
 class RefusedToFetch(Exception): ...
+class MetadataUnavailable(Exception): ...
 
 
 class _BoundedReader:
@@ -109,17 +110,18 @@ def extract_tgz(blob: bytes, cfg: Config):
     return files, binaries, has_lockfile, has_shrinkwrap
 
 
-def read_body(r, cfg: Config, limit: int | None = None) -> bytes:
-    """A response body within a total deadline. urlopen's timeout bounds each socket read only, so a
-    connection that trickles bytes would otherwise hold a scan tick forever."""
-    deadline = time.monotonic() + cfg.fetch_deadline_s
+def read_body(r, cfg: Config, limit: int | None = None, deadline: float | None = None) -> bytes:
+    """A response body within a total deadline (seconds; default fetch_deadline_s). urlopen's timeout bounds
+    each socket read only, so a connection that trickles bytes would otherwise hold a scan tick forever."""
+    budget = deadline or cfg.fetch_deadline_s
+    deadline = time.monotonic() + budget
     buf = bytearray()
     while chunk := r.read1(65536):
         buf += chunk
         if limit is not None and len(buf) > limit:
             raise RefusedToFetch("download-size")
         if time.monotonic() > deadline:
-            raise TimeoutError(f"download took longer than {cfg.fetch_deadline_s:.0f}s")
+            raise TimeoutError(f"download took longer than {budget:.0f}s")
     return bytes(buf)
 
 
@@ -135,7 +137,7 @@ def _fetch_json(url: str, cfg: Config) -> dict | None:
     req = urllib.request.Request(url, headers={"User-Agent": "npmdiffwatch/0.1"})
     try:
         with urllib.request.urlopen(req, timeout=cfg.fetch_timeout_s) as r:
-            return json.loads(read_body(r, cfg))
+            return json.loads(read_body(r, cfg, deadline=cfg.packument_deadline_s))
     except urllib.error.HTTPError as e:
         if e.code == 404:
             return None
@@ -281,6 +283,8 @@ def fetch_artifacts(cfg, rel: NewRelease) -> ArtifactSet | None:
         raise RefusedToFetch(f"quarantined: {rel.package}")
 
     meta = _packument(rel.package, cfg)
+    if meta == {}:        # a failed download, not a missing package: retry, don't mark it "nothing to scan"
+        raise MetadataUnavailable(f"could not download package metadata for {rel.package}")
     if not meta or "versions" not in meta:
         return None
 

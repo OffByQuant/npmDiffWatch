@@ -376,6 +376,14 @@ def prune(cfg: Config) -> int:
     return before - size()
 
 
+def feed_retry_counts(cfg: Config) -> dict:
+    conn = store.connect(cfg); store.init_schema(conn)
+    try:
+        return store.feed_retry_counts(conn)
+    finally:
+        conn.close()
+
+
 def pending_review_counts(cfg: Config) -> dict:
     conn = store.connect(cfg); store.init_schema(conn)
     try:
