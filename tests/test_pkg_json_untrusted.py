@@ -37,9 +37,9 @@ def test_package_json_only_release_still_has_reviewable_content():
 def test_declared_description_is_context_inside_the_markers():
     # The reviewer sees what the package claims to be, labelled as the author's claim and fenced as untrusted.
     d = Diff("p", "1.0.1", False, [FileDiff("a.js", "modified", [Hunk((0, 1), (0, 1), ["x()"], [])])], [],
-             description="CLI for the Fleetbo vibe-coding platform")
+             description="CLI for the Acme app platform")
     trusted, untrusted = _zones(d)
-    assert "CLI for the Fleetbo vibe-coding platform" in untrusted and "Fleetbo" not in trusted
+    assert "CLI for the Acme app platform" in untrusted and "Acme" not in trusted
     assert "author's claim" in untrusted
 
 

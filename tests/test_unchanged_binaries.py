@@ -1,6 +1,6 @@
 """Oversized sources, binaries and foreign-language files are signals only when this release adds or changes
-them. A package whose CI republishes the same 8 MB bundle every half hour must not escalate each release to a
-human (live: 438 of 440 files unchanged, four unchanged dist bundles scored 80)."""
+them. A package whose CI republishes the same large bundle every half hour must not escalate each release to a
+human."""
 import dataclasses
 import io
 import tarfile

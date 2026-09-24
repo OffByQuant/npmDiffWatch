@@ -302,7 +302,7 @@ queues and their evidence) and:
 - clears npm metadata documents stored by older versions (up to 65 MB each, never read), then compacts
   the file.
 
-On a 9-hour live run this took the database from 42 MB to 17 MB. To prune right away:
+To prune right away:
 
 ```bash
 npmdiffwatch -c npmdiffwatch.toml prune
@@ -382,7 +382,7 @@ need and serve one request at a time:
 | llama-swap | put the llama.cpp flags in the model's `cmd:`; the first request after an unload waits for the model to load (covered by `probe_timeout`) |
 | vLLM | `--max-model-len <ctx>` `--max-num-seqs 1` `--gpu-memory-utilization 0.9` |
 | Ollama | `num_ctx` in the Modelfile, `OLLAMA_NUM_PARALLEL=1` |
-| any reasoning model | turn thinking off (`chat_template_kwargs = { enable_thinking = false }`); reviews ran 1.6–4.4× faster with the same verdicts |
+| any reasoning model | turn thinking off (`chat_template_kwargs = { enable_thinking = false }`); reviews get several times faster |
 
 **macOS and a model on another machine.** The first request to a LAN address (e.g. `192.168.x.x`) makes
 macOS ask whether your terminal app may use the Local Network. Until you allow it, the endpoint shows as

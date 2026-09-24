@@ -1,6 +1,6 @@
-"""A release whose package metadata can't be downloaded must never vanish. Live: a 33 MB packument hit the
-120 s deadline, ingest couldn't tell which version was released, dropped the row and moved the cursor past
-it — no release row, no retry, only a log line."""
+"""A release whose package metadata can't be downloaded must never vanish. If a large packument hits the download
+deadline, ingest can't tell which version was released; the row must be retried, not dropped with the cursor
+moved past it."""
 import dataclasses
 
 from npmdiffwatch import fetcher, ingest, store

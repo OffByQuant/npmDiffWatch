@@ -1,5 +1,5 @@
-"""The scan database must not grow without bound. Live (RTX run, 1,475 releases in ~9 h): 37 MB, two thirds
-of it uncompressed evidence, half of that for releases reviewed benign or never escalated."""
+"""The scan database must not grow without bound: evidence is compressed, and kept only for releases a person
+may still act on (not for releases reviewed benign or never escalated)."""
 import dataclasses
 import datetime
 
