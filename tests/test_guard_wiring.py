@@ -139,3 +139,13 @@ def test_hung_endpoint_costs_one_timeout_and_the_cursor_advances(tmp_path, monke
     assert be.calls == 1
     conn = store.connect(cfg)
     assert store.get_last_serial(conn) == 5100
+
+
+def test_guard_status_reads_stored_stats(tmp_path):
+    cfg = _cfg(tmp_path)
+    conn = store.connect(cfg); store.init_schema(conn)
+    store.save_reviewer_stats(conn, cfg.reviewer.base_url, cfg.reviewer.model, tok_s=85.0, chars_per_token=3.4,
+                              samples=3, state="degraded", detail="degraded", paused_until=0.0, slow_streak=2)
+    conn.close()
+    st = orchestrator.guard_status(cfg)
+    assert st["state"] == "degraded" and st["tok_s"] == 85.0 and st["cap_chars"] < 60_000

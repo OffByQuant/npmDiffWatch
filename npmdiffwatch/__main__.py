@@ -3,7 +3,8 @@ from . import egress
 from .config import Config, load_config
 from .orchestrator import (run_once, seed_now, list_pending, adjudicate, get_evidence,
                            backfill_evidence, export_dashboard, watch, review_pending,
-                           pending_review_counts, prune)
+                           pending_review_counts, prune, guard_status)
+from .guard import describe
 
 
 def _cfg(args):
@@ -102,6 +103,9 @@ def main():
         left = ", ".join(f"{k}: {v}" for k, v in sorted(remaining.items())) or "none"
         print(f"[npmdiffwatch] reviewed {n} queued release(s); still queued: {left}")
     elif args.cmd == "pending":
+        gs = guard_status(cfg)
+        if gs:
+            print(f"[npmdiffwatch] reviewer: {describe(gs)}")
         queued = pending_review_counts(cfg)
         if queued:
             print(f"[npmdiffwatch] {sum(queued.values())} release(s) queued for LLM review ("

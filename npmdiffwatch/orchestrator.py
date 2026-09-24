@@ -431,6 +431,18 @@ def _poll_age(updated_at):
     return dashboard.humanize_age(secs), secs > 900  # stale after 15 min idle
 
 
+def guard_status(cfg: Config):
+    """The reviewer guard's view of the endpoint (breaker, measured speed, input cap) from stored stats;
+    sends nothing to the endpoint. None when the reviewer is disabled."""
+    if not cfg.reviewer_enabled:
+        return None
+    conn = store.connect(cfg); store.init_schema(conn)
+    try:
+        return guard_mod.ReviewerGuard(cfg, None, conn).status()
+    finally:
+        conn.close()
+
+
 def export_dashboard(cfg: Config, out_path=None, generated_at: str = ""):
     from pathlib import Path
     out = Path(out_path) if out_path else cfg.db_path.parent / "dashboard.html"
@@ -450,6 +462,7 @@ def export_dashboard(cfg: Config, out_path=None, generated_at: str = ""):
         "releases_total": releases_total, "verdicts_total": len(rows),
         "flagged_total": sum(1 for r in rows if (r.get("classification") or "").lower() in _FLAGGED),
         "reviewer": reviewer_label, "model_reachable": reachable, "pending_review": pending_review,
+        "guard": guard_status(cfg),
     }
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(dashboard.render_dashboard(rows, status=status, generated_at=generated_at))
