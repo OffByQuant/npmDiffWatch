@@ -589,6 +589,15 @@ def guard_status(cfg: Config):
         conn.close()
 
 
+def _watchlist_status(cfg):
+    if not cfg.watchlist:
+        return None
+    try:
+        return baseline_status(cfg, watchlist_mod.load(cfg.watchlist))
+    except watchlist_mod.WatchlistError:
+        return None
+
+
 def export_dashboard(cfg: Config, out_path=None, generated_at: str = ""):
     from pathlib import Path
     out = Path(out_path) if out_path else cfg.db_path.parent / "dashboard.html"
@@ -609,6 +618,7 @@ def export_dashboard(cfg: Config, out_path=None, generated_at: str = ""):
         "flagged_total": sum(1 for r in rows if (r.get("classification") or "").lower() in _FLAGGED),
         "reviewer": reviewer_label, "model_reachable": reachable, "pending_review": pending_review,
         "guard": guard_status(cfg),
+        "watchlist": _watchlist_status(cfg),
     }
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(dashboard.render_dashboard(rows, status=status, generated_at=generated_at))
