@@ -85,6 +85,9 @@ def build_diff(a: ArtifactSet) -> Diff:
 
         if path == "package.json":
             pkg_changes, cs = _diff_json(prior, new)
+            if a.prior_version is None:
+                # First release: every field is "new", so only an install-time script is a signal.
+                pkg_changes = [c for c in pkg_changes if c.field == "scripts"] if cs else []
             if cs:
                 changed_scripts_set = cs
             if pkg_changes and (new is not None or prior is not None):
