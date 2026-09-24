@@ -124,7 +124,7 @@ def test_hung_endpoint_costs_one_timeout_and_the_cursor_advances(tmp_path, monke
     monkeypatch.setattr(ingest, "changes_since", lambda *a, **k: ChangesPage(releases=rels, watermark=5100))
     art = SimpleNamespace(prior_version="0.9.0", is_new_package=False, maintainer_metadata=None,
                           scripts_field=None, has_lockfile=False, has_shrinkwrap=False)
-    monkeypatch.setattr(fetcher, "fetch_artifacts", lambda cfg, rel: art)
+    monkeypatch.setattr(fetcher, "fetch_artifacts", lambda cfg, rel, meta=None: art)
     monkeypatch.setattr(orchestrator.differ, "build_diff", lambda a: _diff("x"))
     monkeypatch.setattr(orchestrator.engine, "triage", lambda *a, **k: _T)
     monkeypatch.setattr(orchestrator, "_probe_reviewer", lambda cfg: (True, "127.0.0.1:8000"))

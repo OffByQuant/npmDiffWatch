@@ -42,16 +42,27 @@ def _purl_name(purl):
     return body[:at] if at > 0 else body
 
 
+def _alias_target(version):
+    """'npm:string-width@4.2.3' -> 'string-width' (lockfile v1 alias); None otherwise."""
+    if not isinstance(version, str) or not version.startswith("npm:"):
+        return None
+    body = version[4:]
+    at = body.rfind("@")
+    return body[:at] if at > 0 else body
+
+
 def _lock_names(doc):
     if isinstance(doc.get("packages"), dict):
         for key, meta in doc["packages"].items():
             if key and "node_modules/" in key and not (isinstance(meta, dict) and meta.get("link")):
-                yield key.rsplit("node_modules/", 1)[1]
+                real = meta.get("name") if isinstance(meta, dict) else None     # set when the entry is an alias
+                yield real if isinstance(real, str) else key.rsplit("node_modules/", 1)[1]
     else:
         stack = [doc.get("dependencies") or {}]
         while stack:
             for name, meta in stack.pop().items():
-                yield name
+                version = meta.get("version") if isinstance(meta, dict) else None
+                yield _alias_target(version) or name
                 if isinstance(meta, dict) and isinstance(meta.get("dependencies"), dict):
                     stack.append(meta["dependencies"])
 
@@ -82,7 +93,7 @@ def load(path) -> Watchlist:
     if text.lstrip().startswith(("{", "[")):
         try:
             doc = json.loads(text)
-        except ValueError:
+        except (ValueError, RecursionError):
             doc = None
         if isinstance(doc, dict) and "lockfileVersion" in doc:
             fmt, found = "package-lock", _lock_names(doc)
@@ -92,11 +103,15 @@ def load(path) -> Watchlist:
             fmt, found = "spdx", _spdx_names(doc)
         else:
             raise WatchlistError(f"watchlist {path} is not a recognized format. Accepted: {FORMATS}")
-        for n in found:
-            if n and _NAME.match(n):
-                names.add(n)
-            elif n:
-                skipped += 1
+        try:
+            for n in found:
+                if isinstance(n, str) and _NAME.match(n):
+                    names.add(n)
+                elif n:
+                    skipped += 1
+        except (AttributeError, TypeError, RecursionError) as e:       # a field of the wrong type
+            raise WatchlistError(f"watchlist {path} is malformed {fmt} ({type(e).__name__}). "
+                                 f"Accepted: {FORMATS}") from e
     else:
         fmt = "names"
         for line in text.splitlines():

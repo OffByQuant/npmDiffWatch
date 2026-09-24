@@ -72,8 +72,10 @@ def main():
                       help="on a fresh database, start N npm changes back instead of now")
     sub.add_parser("seed-now",
                    help="set the cursor to now and exit (start monitoring from now)")
-    sub.add_parser("pending",
-                   help="list suspicious verdicts awaiting adjudication, each with its diff")
+    pendp = sub.add_parser("pending",
+                           help="list suspicious verdicts awaiting adjudication, each with its diff")
+    pendp.add_argument("--watchlist", default=None, metavar="PATH",
+                       help="also show this watchlist and its startup-review progress")
     sub.add_parser("prune", help="shrink the database now (run/watch also do it daily): compress evidence, drop "
                                  "it for benign releases, apply retention_days, compact; findings and queues stay")
     rpp = sub.add_parser("review-pending",
@@ -149,8 +151,12 @@ def main():
             print(f"[npmdiffwatch] reviewer: {describe(gs)}")
         if cfg.watchlist:
             from .orchestrator import WatchlistFile, baseline_status
-            s = baseline_status(cfg, WatchlistFile(cfg.watchlist).current())
-            print(f"[npmdiffwatch] watchlist: {s['describe']} · baseline {s['done']:,}/{s['total']:,}")
+            from .watchlist import WatchlistError
+            try:
+                s = baseline_status(cfg, WatchlistFile(cfg.watchlist).current())
+                print(f"[npmdiffwatch] watchlist: {s['describe']} · baseline {s['done']:,}/{s['total']:,}")
+            except WatchlistError as e:
+                print(f"[npmdiffwatch] {e}")
         fr = feed_retry_counts(cfg)
         if fr["retrying"] or fr["gave_up"]:
             print(f"[npmdiffwatch] package metadata failed to download: {fr['retrying']} release(s) being retried, "

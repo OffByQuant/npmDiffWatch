@@ -22,7 +22,8 @@ CREATE TABLE IF NOT EXISTS verdicts(id INTEGER PRIMARY KEY,
   attack_type TEXT, reasoning TEXT, cited_hunk TEXT, model TEXT, urgent INTEGER,
   created_at TEXT, human_label TEXT, human_note TEXT, adjudicated_at TEXT);
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
-CREATE TABLE IF NOT EXISTS watchlist_baseline(package TEXT PRIMARY KEY, result TEXT, done_at TEXT);
+CREATE TABLE IF NOT EXISTS watchlist_baseline(package TEXT PRIMARY KEY, result TEXT, done_at TEXT,
+    attempts INTEGER DEFAULT 0);
 CREATE TABLE IF NOT EXISTS feed_retry(package TEXT PRIMARY KEY, seq INTEGER, attempts INTEGER,
     gave_up INTEGER DEFAULT 0, updated_at TEXT);
 CREATE TABLE IF NOT EXISTS reviewer_stats(endpoint TEXT, model TEXT, tok_s REAL, chars_per_token REAL,
@@ -249,10 +250,20 @@ def baseline_pending(conn, names, limit):
     """Listed packages whose latest release hasn't been reviewed yet (fetch_failed ones are retried)."""
     return sorted(set(names) - _baselined(conn))[:limit]
 
-def mark_baseline(conn, package, result):
-    conn.execute("INSERT INTO watchlist_baseline(package, result, done_at) VALUES(?,?,?) ON CONFLICT(package) "
-                 "DO UPDATE SET result=excluded.result, done_at=excluded.done_at", (package, result, _now()))
+def mark_baseline(conn, package, result) -> str:
+    """Record a baseline outcome. fetch_failed is retried FEED_RETRIES times, then recorded as gave_up (done),
+    so one package that never downloads can't keep the baseline open forever. Returns the stored result."""
+    row = conn.execute("SELECT attempts FROM watchlist_baseline WHERE package=?", (package,)).fetchone()
+    attempts = (row[0] or 0) if row else 0
+    if result == "fetch_failed":
+        attempts += 1
+        if attempts > FEED_RETRIES:
+            result = "gave_up"
+    conn.execute("INSERT INTO watchlist_baseline(package, result, done_at, attempts) VALUES(?,?,?,?) "
+                 "ON CONFLICT(package) DO UPDATE SET result=excluded.result, done_at=excluded.done_at, "
+                 "attempts=excluded.attempts", (package, result, _now(), attempts))
     conn.commit()
+    return result
 
 def baseline_counts(conn, names) -> tuple:
     names = set(names)

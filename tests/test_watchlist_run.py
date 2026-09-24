@@ -37,7 +37,7 @@ def _registry(monkeypatch, latest):
         return {"dist-tags": {"latest": v}, "versions": {v: {}}} if v else {"versions": {}}
     monkeypatch.setattr(fetcher, "_packument", packument)
     fetched = []
-    monkeypatch.setattr(orchestrator, "_fetch_one", lambda cfg, rel: fetched.append((rel.package, rel.version)) or None)
+    monkeypatch.setattr(orchestrator, "_fetch_one", lambda cfg, rel, meta=None: fetched.append((rel.package, rel.version)) or None)
     return fetched
 
 
@@ -117,3 +117,39 @@ def test_a_broken_reload_keeps_the_last_good_list(tmp_path, capsys):
     lst.write_text("b\n")
     os.utime(lst, (time.time() + 10, time.time() + 10))
     assert wf.current().names == {"b"}
+
+
+def test_a_package_that_keeps_failing_is_given_up_on_and_watch_sleeps(tmp_path, monkeypatch):
+    # Review finding: fetch_failed counted as "not baselined" forever, so watch never slept and re-fetched it
+    # every tick with no backoff.
+    cfg = _cfg(tmp_path); _seeded(cfg)
+    lst = tmp_path / "deps.txt"; lst.write_text("a\nb\n")
+    _no_feed(monkeypatch)
+    calls = []
+    monkeypatch.setattr(fetcher, "_packument", lambda name, cfg: calls.append(name) or
+                        ({} if name == "b" else {"dist-tags": {"latest": "1.0.0"}, "versions": {"1.0.0": {}}}))
+    monkeypatch.setattr(orchestrator, "_fetch_one", lambda cfg, rel, meta=None: None)
+    monkeypatch.setattr(orchestrator, "export_dashboard", lambda *a, **k: None)
+    slept = []
+    orchestrator.watch(cfg, interval=300, iterations=8, sleep_fn=slept.append,
+                       watchlist=orchestrator.WatchlistFile(lst))
+    assert calls.count("b") == 1 + store.FEED_RETRIES and len(slept) >= 3
+    conn = store.connect(cfg)
+    assert dict(conn.execute("SELECT package, result FROM watchlist_baseline").fetchall())["b"] == "gave_up"
+
+
+def test_baseline_fetches_each_packument_once_and_hands_it_to_the_fetch(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path); _seeded(cfg)
+    _no_feed(monkeypatch)
+    calls, handed = [], []
+    monkeypatch.setattr(fetcher, "_packument", lambda name, cfg: calls.append(name) or
+                        {"dist-tags": {"latest": "1.0.0"}, "versions": {"1.0.0": {}}})
+    monkeypatch.setattr(orchestrator, "_fetch_one", lambda cfg, rel, meta=None: handed.append(meta is not None) or None)
+    orchestrator.run_once(cfg, watch=Watchlist("d", "names", frozenset({"a", "b", "c"}), ()))
+    assert sorted(calls) == ["a", "b", "c"] and handed == [True, True, True]
+
+
+def test_fetch_artifacts_uses_a_packument_it_is_given(monkeypatch):
+    monkeypatch.setattr(fetcher, "_packument", lambda *a: (_ for _ in ()).throw(AssertionError("fetched twice")))
+    meta = {"versions": {"1.0.0": {}}}          # no dist.tarball: fetch_artifacts returns None without downloading
+    assert fetcher.fetch_artifacts(Config(), orchestrator.NewRelease("p", "1.0.0", 1), meta=meta) is None

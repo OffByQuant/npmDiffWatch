@@ -167,9 +167,9 @@ def drain_pending(cfg, conn, rvw, *, auto: bool, reasons=None, limit=None, guard
     return done
 
 
-def _fetch_one(cfg, rel):
+def _fetch_one(cfg, rel, meta=None):
     try:
-        return fetcher.fetch_artifacts(cfg, rel)
+        return fetcher.fetch_artifacts(cfg, rel, meta)
     except Exception as e:
         return e
 
@@ -477,27 +477,48 @@ class WatchlistFile:
         return self._list
 
 
+def _baseline_meta(cfg, name):
+    return name, fetcher._packument(name, cfg)
+
+
 def _baseline_step(cfg, conn, rvw, ruleset, watch, offline, guard):
     """Review the latest release of up to watchlist_baseline_per_tick listed packages not yet baselined.
-    Their releases use the current cursor as serial and never move it."""
+    Downloads run fetch_concurrency at a time, in windows, so at most that many packuments and tarball pairs
+    are in memory at once; each packument is fetched once and handed to the tarball fetch. Database work stays
+    on this thread. Baseline releases use the current cursor as serial and never move it."""
     serial = store.get_last_serial(conn)
-    for name in store.baseline_pending(conn, watch.names, cfg.watchlist_baseline_per_tick):
-        meta = fetcher._packument(name, cfg)
-        if meta is None:
-            store.mark_baseline(conn, name, "not_found"); continue
-        if meta == {}:
-            store.mark_baseline(conn, name, "fetch_failed"); continue
-        latest = (meta.get("dist-tags") or {}).get("latest")
-        if not latest or latest not in (meta.get("versions") or {}):
-            store.mark_baseline(conn, name, "no_versions"); continue
-        if store.get_stage(conn, name, latest) in TERMINAL:
-            store.mark_baseline(conn, name, "scanned"); continue
-        rel = NewRelease(name, latest, serial)
-        done = _process_fetched(cfg, conn, rvw, ruleset, rel, _fetch_one(cfg, rel), offline, guard)
-        store.mark_baseline(conn, name, "scanned" if done else "fetch_failed")
+    W = max(1, cfg.fetch_concurrency)
+    pending = store.baseline_pending(conn, watch.names, cfg.watchlist_baseline_per_tick)
+    with ThreadPoolExecutor(max_workers=W) as ex:
+        for start in range(0, len(pending), W):
+            todo = []
+            for name, meta in ex.map(lambda n: _baseline_meta(cfg, n), pending[start:start + W]):
+                if meta is None:
+                    store.mark_baseline(conn, name, "not_found"); continue
+                if meta == {}:
+                    _baseline_failed(conn, name); continue
+                latest = (meta.get("dist-tags") or {}).get("latest")
+                if not latest or latest not in (meta.get("versions") or {}):
+                    store.mark_baseline(conn, name, "no_versions"); continue
+                if store.get_stage(conn, name, latest) in TERMINAL:
+                    store.mark_baseline(conn, name, "scanned"); continue
+                todo.append((NewRelease(name, latest, serial), meta))
+            results = ex.map(lambda rm: _fetch_one(cfg, rm[0], rm[1]), todo)
+            for (rel, _), result in zip(todo, results):
+                if _process_fetched(cfg, conn, rvw, ruleset, rel, result, offline, guard):
+                    store.mark_baseline(conn, rel.package, "scanned")
+                else:
+                    _baseline_failed(conn, rel.package)
     d, t = store.baseline_counts(conn, watch.names)
     if d < t:
         print(f"[npmdiffwatch] watchlist baseline: {d:,}/{t:,} packages", flush=True)
+
+
+def _baseline_failed(conn, name):
+    if store.mark_baseline(conn, name, "fetch_failed") == "gave_up":
+        msg = (f"[npmdiffwatch] WARNING: watchlist baseline gave up on {name} after {1 + store.FEED_RETRIES} "
+               f"failed downloads; its new releases are still watched")
+        print(msg, flush=True); logger.warning(msg)
 
 
 def baseline_status(cfg, wl) -> dict:

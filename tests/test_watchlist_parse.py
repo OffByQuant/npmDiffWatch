@@ -67,3 +67,29 @@ def test_unusable_files_raise_with_the_path_and_formats(tmp_path, name, text, ms
 def test_describe(tmp_path):
     w = _w(tmp_path, "deps.txt", "a\nb\n@s/*\n")
     assert w.describe() == "deps.txt · 2 packages, 1 pattern"
+
+
+@pytest.mark.parametrize("doc", [
+    {"lockfileVersion": 1, "dependencies": ["a"]},
+    {"bomFormat": "CycloneDX", "components": 5},
+    {"spdxVersion": "SPDX-2.3", "packages": [{"externalRefs": 7}]},
+])
+def test_wrongly_typed_documents_raise_watchlist_error(tmp_path, doc):
+    # Review finding: AttributeError/TypeError escaped load() and ended the watch daemon on a reload.
+    with pytest.raises(watchlist.WatchlistError):
+        _w(tmp_path, "x.json", doc)
+
+
+def test_deeply_nested_json_raises_watchlist_error(tmp_path):
+    with pytest.raises(watchlist.WatchlistError):
+        _w(tmp_path, "deep.json", '{"lockfileVersion":1,"dependencies":' + "[" * 100_000 + "]" * 100_000 + "}")
+
+
+def test_lockfile_aliases_are_watched_under_the_real_package_name(tmp_path):
+    # node_modules/string-width-cjs is an alias of string-width (common via @isaacs/cliui).
+    w = _w(tmp_path, "package-lock.json", {"lockfileVersion": 3, "packages": {
+        "": {}, "node_modules/string-width-cjs": {"name": "string-width", "version": "4.2.3"}}})
+    assert w.names == {"string-width"}
+    w1 = _w(tmp_path, "package-lock.json", {"lockfileVersion": 1, "dependencies": {
+        "string-width-cjs": {"version": "npm:string-width@4.2.3"}, "@x/y-alias": {"version": "npm:@x/y@1.0.0"}}})
+    assert w1.names == {"string-width", "@x/y"}

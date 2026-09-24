@@ -35,3 +35,22 @@ def test_dashboard_shows_the_watchlist_and_baseline(tmp_path):
     out = orchestrator.export_dashboard(cfg, out_path=tmp_path / "d.html")
     assert "watchlist: deps.txt · 2 packages · baseline 0/2" in out.read_text()
     assert "watchlist:" not in dashboard.render_dashboard([], status={}, generated_at="")
+
+
+def test_pending_takes_a_watchlist_flag_and_survives_a_broken_list(tmp_path, monkeypatch, capsys):
+    import sys
+    lst = tmp_path / "deps.txt"; lst.write_text("a\n")
+    base = ["npmdiffwatch", "-c", str(_paths(tmp_path)), "pending"]
+    monkeypatch.setattr(sys, "argv", base + ["--watchlist", str(lst)])
+    cli.main()
+    assert "watchlist: deps.txt · 1 package · baseline 0/1" in capsys.readouterr().out
+    lst.write_text("")
+    monkeypatch.setattr(sys, "argv", base + ["--watchlist", str(lst)])
+    cli.main()
+    assert "has no packages" in capsys.readouterr().out
+
+
+def _paths(tmp_path):
+    p = tmp_path / "c.toml"
+    p.write_text(f'db_path = "{tmp_path}/db.sqlite"\nlock_path = "{tmp_path}/l"\nreviewer_enabled = false\n')
+    return p
