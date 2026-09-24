@@ -187,3 +187,21 @@ def test_degraded_also_posts_the_webhook(tmp_path, monkeypatch):
     assert sent == []
     gd.record_success(_u(10_000), secs=500.0, input_chars=34_000)
     assert len(sent) == 1 and "measured speed" in sent[0]
+
+
+class _Mem:
+    def __init__(self, why):
+        self.why = why
+
+    def pressure(self):
+        return self.why
+
+
+def test_host_memory_pressure_defers_reviews(tmp_path):
+    cfg = _cfg(tmp_path)
+    conn = store.connect(cfg); store.init_schema(conn)
+    mem = _Mem("swap 83% used")
+    gd = g.ReviewerGuard(cfg, Backend(Clock()), conn, clock=Clock(), memory=mem, out=lambda m: None)
+    assert gd.admit() == "host memory: swap 83% used"
+    mem.why = None
+    assert gd.admit() is None

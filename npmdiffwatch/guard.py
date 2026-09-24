@@ -6,7 +6,7 @@ cron-driven `run` is a new process every tick)."""
 import logging
 import time
 
-from . import notifier, store
+from . import hostmem, notifier, store
 from .backends import ReviewUnavailable
 from .reviewer import SYSTEM_PROMPT
 
@@ -42,9 +42,10 @@ def describe(status):
 
 
 class ReviewerGuard:
-    def __init__(self, cfg, backend, conn, *, clock=time.time, memory=None, out=None):
+    def __init__(self, cfg, backend, conn, *, clock=time.time, memory="auto", out=None):
         rc = cfg.reviewer
-        self.cfg, self.rc, self.backend, self.conn, self.clock, self.memory = cfg, rc, backend, conn, clock, memory
+        self.cfg, self.rc, self.backend, self.conn, self.clock = cfg, rc, backend, conn, clock
+        self.memory = hostmem.for_config(cfg) if memory == "auto" else memory
         self.out = out or (lambda msg: print(msg, flush=True))
         self.endpoint = rc.base_url if rc.provider == "openai" else rc.provider
         self.model = rc.model
