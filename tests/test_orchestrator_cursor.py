@@ -1,5 +1,5 @@
 """Cursor advancement in run_once: the watermark must move past release-less
-pages, but a blocked (retryable) release must pin the cursor so it is retried."""
+pages, and a failed (retryable) release waits in the retry list, not on the cursor."""
 import dataclasses
 from pathlib import Path
 
@@ -40,7 +40,7 @@ def test_release_less_page_advances_cursor_to_watermark(tmp_path, monkeypatch):
     assert store.get_last_serial(conn) == 5100
 
 
-def test_blocked_release_pins_cursor_for_retry(tmp_path, monkeypatch):
+def test_failed_release_is_queued_for_retry_and_the_cursor_moves_on(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
     _seed_cursor(cfg, 5000)
     rel = NewRelease("stuck-pkg", "1.0.0", 5050)
@@ -54,8 +54,8 @@ def test_blocked_release_pins_cursor_for_retry(tmp_path, monkeypatch):
     orchestrator.run_once(cfg, seed_if_fresh=False)
 
     conn = store.connect(cfg)
-    # Must NOT jump to the watermark (5100) past the unprocessed release.
-    assert store.get_last_serial(conn) == 5000
+    assert store.get_last_serial(conn) == 5100
+    assert [tuple(r) for r in store.scan_retries_due(conn)] == [("stuck-pkg", "1.0.0", 5050)]
 
 
 def test_recent_starts_a_fresh_cursor_n_changes_back_and_scans_in_the_same_tick(tmp_path, monkeypatch):

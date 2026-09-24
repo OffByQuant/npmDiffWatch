@@ -1,6 +1,5 @@
-"""A release that can't be downloaded or processed is retried on the next scans, but not forever: it holds the
-cursor while it waits, so one that always fails would stall the whole scan. After the first try and 3 retries
-it is given up on visibly (an UNREVIEWED alert and a `pending` entry) and the cursor moves on. Each download
+"""A release that can't be downloaded or processed is retried on the next scans, but not forever: after the
+first try and 3 retries it is given up on visibly (an UNREVIEWED alert and a `pending` entry). Each download
 retry gets a longer deadline, like the LLM review retries."""
 import dataclasses
 import logging
@@ -38,8 +37,8 @@ def _timeout(cfg, rel, meta=None):
 def test_a_download_that_keeps_failing_is_given_up_after_three_retries(tmp_path, monkeypatch, capsys):
     cfg = _cfg(tmp_path)
     for _ in range(3):
-        assert _scan(cfg, monkeypatch, _timeout) == (5000, "fetch_failed")    # held for retry
-    assert _scan(cfg, monkeypatch, _timeout) == (5010, "scan_failed")          # 4th failure: cursor moves on
+        assert _scan(cfg, monkeypatch, _timeout) == (5010, "fetch_failed")    # waiting for a retry
+    assert _scan(cfg, monkeypatch, _timeout) == (5010, "scan_failed")          # 4th failure: given up on
     out = capsys.readouterr().out
     assert "slow-pkg 2.0.0" in out and "UNREVIEWED" in out and "TimeoutError" in out and "manual review" in out
     [item] = orchestrator.list_pending(cfg)

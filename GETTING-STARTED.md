@@ -356,9 +356,10 @@ queued: no model can review it, so it goes straight to `pending` for a human.
   after 4 attempts (not scanned)`.
 
 - **A release that fails to download or process** (a timeout, a registry error, a file the tool can't
-  handle) is retried on the next scans, with a longer download deadline each time (×2, ×3, ×4). After 4
-  attempts it alerts as `UNREVIEWED: this release could not be scanned after 4 attempts (<error>) … Needs
-  manual review.` and goes to `pending`, so one release that always fails can't stall the scan.
+  handle) doesn't hold up the scan: newer releases are scanned as usual, and the failed one is retried at
+  the start of the next scans, with a longer download deadline each time (×2, ×3, ×4). This also covers a
+  brand-new release whose tarball npm isn't serving yet. After 4 attempts it alerts as `UNREVIEWED: this
+  release could not be scanned after 4 attempts (<error>) … Needs manual review.` and goes to `pending`.
 
 Downloads have a total deadline (`fetch_deadline_s`, 120 s; `packument_deadline_s`, 300 s for package
 metadata), so one stalled download can't hold up a scan.
