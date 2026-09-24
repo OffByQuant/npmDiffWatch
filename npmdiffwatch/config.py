@@ -43,7 +43,8 @@ class Config:
     publisher_footprint_max: int = 3
     max_decompressed_bytes: int = 120_000_000
     max_package_json_bytes: int = 100_000
-    fetch_timeout_s: float = 30.0
+    fetch_timeout_s: float = 30.0     # per socket read
+    fetch_deadline_s: float = 120.0   # per download, total
     max_releases_per_run: int = 200
     fetch_concurrency: int = 4
     new_package_policy: str = "surface"

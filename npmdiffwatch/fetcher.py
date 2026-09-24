@@ -5,6 +5,7 @@ import json
 import os
 import posixpath
 import tarfile
+import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
@@ -99,16 +100,25 @@ def extract_tgz(blob: bytes, cfg: Config):
     return files, binaries, has_lockfile, has_shrinkwrap
 
 
+def read_body(r, cfg: Config, limit: int | None = None) -> bytes:
+    """A response body within a total deadline. urlopen's timeout bounds each socket read only, so a
+    connection that trickles bytes would otherwise hold a scan tick forever."""
+    deadline = time.monotonic() + cfg.fetch_deadline_s
+    buf = bytearray()
+    while chunk := r.read1(65536):
+        buf += chunk
+        if limit is not None and len(buf) > limit:
+            raise RefusedToFetch("download-size")
+        if time.monotonic() > deadline:
+            raise TimeoutError(f"download took longer than {cfg.fetch_deadline_s:.0f}s")
+    return bytes(buf)
+
+
 def _fetch_url(url: str, cfg: Config) -> bytes:
     egress.assert_web_scheme(url)
     req = urllib.request.Request(url, headers={"User-Agent": "npmdiffwatch/0.1"})
     with urllib.request.urlopen(req, timeout=cfg.fetch_timeout_s) as r:
-        buf = bytearray()
-        while chunk := r.read(65536):
-            buf += chunk
-            if len(buf) > cfg.max_download_bytes:
-                raise RefusedToFetch("download-size")
-        return bytes(buf)
+        return read_body(r, cfg, cfg.max_download_bytes)
 
 
 def _fetch_json(url: str, cfg: Config) -> dict | None:
@@ -116,7 +126,7 @@ def _fetch_json(url: str, cfg: Config) -> dict | None:
     req = urllib.request.Request(url, headers={"User-Agent": "npmdiffwatch/0.1"})
     try:
         with urllib.request.urlopen(req, timeout=cfg.fetch_timeout_s) as r:
-            return json.loads(r.read())
+            return json.loads(read_body(r, cfg))
     except urllib.error.HTTPError as e:
         if e.code == 404:
             return None
