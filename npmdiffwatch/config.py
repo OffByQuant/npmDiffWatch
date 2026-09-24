@@ -14,6 +14,12 @@ class ReviewerConfig:
     timeout: float = 300.0             # per-attempt: retry n waits timeout x n (300s, 600s, 900s)
     max_review_attempts: int = 3
     max_pending_per_tick: int = 20     # queued reviews retried at the start of each tick
+    budget_safety: float = 0.6         # a review may be predicted to use at most this share of `timeout`
+    probe_timeout: float = 180.0       # health probe / calibration (covers llama-swap loading a model)
+    slowdown_ratio: float = 0.3        # a review below this share of measured speed counts as slow
+    degraded_pause_s: float = 900.0    # after two slow reviews in a row, pause this long before probing
+    host_memory_guard: str | bool = "auto"   # "auto": on when the endpoint is on this machine (loopback)
+    max_swap_used_pct: float = 75.0          # pause reviews at or above this swap use
     max_input_chars: int = 200_000
     max_output_tokens: int = 8192
     opus_escalation_confidence: float = 0.6

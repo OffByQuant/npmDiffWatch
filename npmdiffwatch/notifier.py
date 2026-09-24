@@ -16,6 +16,22 @@ def _render(v: Verdict) -> str:
     return line
 
 
+def post_webhook(cfg, text) -> bool:
+    """POST {"text": text} to cfg.webhook_url. False when none is set or delivery failed; never raises,
+    because an alert must not break a scan."""
+    if not cfg.webhook_url:
+        return False
+    try:
+        egress.assert_web_scheme(cfg.webhook_url)
+        body = json.dumps({"text": text}).encode()
+        req = urllib.request.Request(cfg.webhook_url, data=body,
+                                     headers={"Content-Type": "application/json", "User-Agent": "npmdiffwatch/0.1"})
+        urllib.request.urlopen(req, timeout=cfg.fetch_timeout_s)
+        return True
+    except Exception:
+        return False
+
+
 def emit(cfg, conn, verdict: Verdict, release_id: int):
     dedupe_key = f"{verdict.package}|{verdict.version}|{verdict.classification}"
     rules_json = json.dumps([r.__dict__ for r in verdict.fired_rules])
@@ -24,14 +40,5 @@ def emit(cfg, conn, verdict: Verdict, release_id: int):
     if not is_new:
         return False
     print(_render(verdict))
-    if cfg.webhook_url:
-        try:
-            egress.assert_web_scheme(cfg.webhook_url)
-            body = json.dumps({"text": _render(verdict)}).encode()
-            req = urllib.request.Request(cfg.webhook_url, data=body,
-                                         headers={"Content-Type": "application/json",
-                                                  "User-Agent": "npmdiffwatch/0.1"})
-            urllib.request.urlopen(req, timeout=cfg.fetch_timeout_s)
-        except Exception:
-            pass
+    post_webhook(cfg, _render(verdict))
     return True

@@ -96,3 +96,26 @@ def test_enum_violation_maps_to_review_unavailable():
     client = _FakeClient(response=_Resp([_Block('{"classification":"totally-bogus"}')]))
     with pytest.raises(ReviewUnavailable):
         _complete(client)
+
+
+class _Usage:
+    def __init__(self, i, o):
+        self.input_tokens, self.output_tokens = i, o
+
+
+def test_complete_records_usage():
+    resp = _Resp([_Block('{"classification":"benign"}')])
+    resp.usage = _Usage(4000, 120)
+    backend = AnthropicBackend("claude-test", client=_FakeClient(response=resp))
+    backend.complete(model="claude-test", system="sys", user_text="data", schema=SCHEMA, max_tokens=1024)
+    assert backend.last_usage == {"prompt_tokens": 4000, "completion_tokens": 120}
+
+
+def test_ping_is_one_token_with_timeout():
+    resp = _Resp([_Block("OK")])
+    resp.usage = _Usage(7, 1)
+    client = _FakeClient(response=resp)
+    backend = AnthropicBackend("claude-test", client=client)
+    assert backend.ping("Reply with OK.", timeout=60.0) == {"prompt_tokens": 7, "completion_tokens": 1}
+    assert client.kwargs["max_tokens"] == 1 and client.kwargs["timeout"] == 60.0
+    assert backend.context_length() is None

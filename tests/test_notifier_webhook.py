@@ -30,3 +30,15 @@ def test_webhook_sets_user_agent(monkeypatch):
     req = captured["req"]
     assert req.get_header("User-agent") == "npmdiffwatch/0.1"
     assert req.get_header("Content-type") == "application/json"
+
+
+def test_post_webhook_without_url_sends_nothing(monkeypatch):
+    monkeypatch.setattr(notifier.urllib.request, "urlopen", lambda *a, **k: (_ for _ in ()).throw(AssertionError))
+    assert notifier.post_webhook(Config(), "x") is False
+
+
+def test_post_webhook_never_raises(monkeypatch):
+    def boom(req, timeout=None):
+        raise OSError("down")
+    monkeypatch.setattr(notifier.urllib.request, "urlopen", boom)
+    assert notifier.post_webhook(Config(webhook_url="https://hooks.example.com/x"), "x") is False

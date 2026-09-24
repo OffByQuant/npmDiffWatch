@@ -165,6 +165,19 @@ structured_output = "json_schema"
 ```
 then `export ANTHROPIC_API_KEY=sk-ant-...` (see §3).
 
+**Model protection keys** (any provider; see §5 for what they do):
+
+```toml
+[reviewer]
+# Model protection (all optional; defaults shown)
+budget_safety = 0.6          # a review may be predicted to use at most this share of `timeout`
+probe_timeout = 180.0        # health probe / calibration timeout
+slowdown_ratio = 0.3         # below this share of measured speed counts as slow
+degraded_pause_s = 900       # pause after two slow reviews in a row
+host_memory_guard = "auto"   # on for loopback endpoints; true / false to force
+max_swap_used_pct = 75
+```
+
 ---
 
 ## 3. API keys
@@ -273,9 +286,10 @@ later review doesn't depend on npm still hosting the tarball.
 
 | reason | when | drained by |
 |---|---|---|
+| `model_busy` | the reviewer guard deferred it: breaker open after a timeout, the model degrading, or this machine short on memory | every tick, first, once the guard allows reviews |
 | `endpoint_unreachable` | the model server is down (each tick prints a warning) | every tick, once it's back |
 | `review_failed` | a review timed out or failed; retried at `timeout` × attempt (300s, 600s, 900s) | every tick, up to `max_review_attempts` (3) |
-| `too_large` | the highest-risk file alone exceeds `max_input_chars` (200k chars) | `review-pending` with a larger-context model |
+| `too_large` | the highest-risk file alone exceeds this endpoint's input cap (`max_input_chars`, 200k chars, or less for a slow endpoint) | every tick once it fits the cap (after calibration, or after you raise `max_input_chars`); otherwise `review-pending` with a larger-context model |
 
 Each tick retries at most `max_pending_per_tick` (20) queued releases before scanning. The rest wait for
 you — typically with a bigger model pointed at the same database:
@@ -289,6 +303,41 @@ npmdiffwatch -c frontier.toml review-pending --reason too_large --limit 10
 larger `max_input_chars`. `pending` shows the queue counts; the dashboard shows them in its status strip.
 A release with **no** reviewable text at all (only binary / oversized-member / ownership signals) is not
 queued: no model can review it, so it goes straight to `pending` for a human.
+
+**Model protection.** The reviewer measures your endpoint and adapts to it, so a slow or struggling
+model server isn't overloaded:
+
+- **Input size from measured speed.** The tool records how fast the endpoint reads input (from the token
+  counts it reports) and caps each review input at `speed × timeout × budget_safety`. Bigger inputs go
+  to the `too_large` queue. Until the first measurement, a new endpoint gets one small calibration request
+  (filler text, never package content) and a 40,000-char cap.
+- **Circuit breaker.** After a timeout, no more reviews are sent that batch; the next batch sends a tiny
+  health probe first and resumes only if it answers within `probe_timeout`.
+- **Slowdown detector.** Two reviews in a row below `slowdown_ratio` of the measured speed pause reviews
+  for `degraded_pause_s` and print a warning — usually the model server is swapping; restart it. It judges
+  only servers that time their own input reading (llama.cpp, llama-swap); elsewhere wall-clock time also
+  counts output and model loading, so the timeout breaker is the protection.
+- **One request at a time.** `watch`/`run` and `review-pending` share a lock (`<lock_path>.review`), so
+  two processes never have reviews at the same endpoint at once.
+- **Host memory guard.** When the model runs on this machine, reviews pause while swap use is at or above
+  `max_swap_used_pct` or the OS reports memory pressure.
+
+`pending` and the dashboard show the current state, e.g. `reviews on · 85 tok/s · input cap 52,020 chars`.
+
+**Size your model server.** Only the server can limit its own memory. Set its context window to what you
+need and serve one request at a time:
+
+| runtime | settings |
+|---|---|
+| llama.cpp | `-c <ctx>` `--parallel 1`; optional `-ctk q8_0 -ctv q8_0` halves KV-cache memory |
+| llama-swap | put the llama.cpp flags in the model's `cmd:`; the first request after an unload waits for the model to load (covered by `probe_timeout`) |
+| vLLM | `--max-model-len <ctx>` `--max-num-seqs 1` `--gpu-memory-utilization 0.9` |
+| Ollama | `num_ctx` in the Modelfile, `OLLAMA_NUM_PARALLEL=1` |
+| any reasoning model | turn thinking off (`chat_template_kwargs = { enable_thinking = false }`); reviews ran 1.6–4.4× faster with the same verdicts |
+
+**macOS and a model on another machine.** The first request to a LAN address (e.g. `192.168.x.x`) makes
+macOS ask whether your terminal app may use the Local Network. Until you allow it, the endpoint shows as
+unreachable. You can change it later under System Settings → Privacy & Security → Local Network.
 
 ---
 
