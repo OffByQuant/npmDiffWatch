@@ -54,8 +54,8 @@ def main():
                    help="set the cursor to now and exit (start monitoring from now)")
     sub.add_parser("pending",
                    help="list suspicious verdicts awaiting adjudication, each with its diff")
-    sub.add_parser("prune", help="shrink the database: clear stored npm packuments (kept by older "
-                                 "versions, never read) and compact the file; verdicts and evidence stay")
+    sub.add_parser("prune", help="shrink the database now (run/watch also do it daily): compress evidence, drop "
+                                 "it for benign releases, apply retention_days, compact; findings and queues stay")
     rpp = sub.add_parser("review-pending",
                          help="review releases queued for LLM review (by default: too_large and exhausted "
                               "retries) — e.g. with -c pointing at a larger-context model")
