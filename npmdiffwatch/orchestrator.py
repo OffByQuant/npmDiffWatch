@@ -206,7 +206,6 @@ _REFUSALS = {
     "decompressed-size": "it unpacks to more than the size limit",
     "members": "it has more files than the limit",
     "member-name": "a file path escapes the package (absolute or '..')",
-    "member-size": "one file is over the size limit",
     "total-size": "its files add up to more than the size limit",
 }
 
