@@ -43,11 +43,12 @@ def init_schema(conn): conn.executescript(SCHEMA); conn.commit(); migrate_schema
 
 def migrate_schema(conn):
     for col in ("maintainer_metadata", "evidence", "packument_json", "scripts_json", "has_lockfile", "has_shrinkwrap",
-                "review_attempts", "pending_reason", "pending_detail", "review_input", "review_input_chars"):
+                "review_attempts", "pending_reason", "pending_detail", "review_input", "review_input_chars",
+                "scan_attempts"):
         try:
             conn.execute(f"SELECT {col} FROM releases LIMIT 1")
         except sqlite3.OperationalError:
-            if col in ("has_lockfile", "has_shrinkwrap", "review_attempts"):
+            if col in ("has_lockfile", "has_shrinkwrap", "review_attempts", "scan_attempts"):
                 conn.execute(f"ALTER TABLE releases ADD COLUMN {col} INTEGER DEFAULT 0")
             elif col == "review_input_chars":
                 conn.execute(f"ALTER TABLE releases ADD COLUMN {col} INTEGER")
@@ -322,6 +323,17 @@ def record_verdict(conn, release_id, verdict) -> int:
     conn.commit()
     return conn.execute("SELECT id FROM verdicts WHERE release_id=?", (release_id,)).fetchone()[0]
 
+def scan_attempts(conn, package, version) -> int:
+    """Failed download/processing attempts so far for a release (0 if it has none or isn't recorded)."""
+    row = conn.execute("SELECT scan_attempts FROM releases WHERE package=? AND version=?",
+                       (package, version)).fetchone()
+    return (row[0] or 0) if row else 0
+
+def bump_scan_attempts(conn, release_id) -> int:
+    conn.execute("UPDATE releases SET scan_attempts=COALESCE(scan_attempts,0)+1 WHERE id=?", (release_id,))
+    conn.commit()
+    return conn.execute("SELECT scan_attempts FROM releases WHERE id=?", (release_id,)).fetchone()[0]
+
 def get_stage(conn, package, version):
     row = conn.execute("SELECT stage FROM releases WHERE package=? AND version=?",
                        (package, version)).fetchone()
@@ -333,7 +345,8 @@ def pending_adjudication(conn):
                   r.evidence, r.stage,
                   v.classification, v.confidence, v.attack_type, v.reasoning, v.cited_hunk, v.model
            FROM releases r JOIN verdicts v ON v.release_id = r.id
-           WHERE r.stage IN ('needs_adjudication', 'refused_to_extract', 'refused_to_fetch') AND v.human_label IS NULL
+           WHERE r.stage IN ('needs_adjudication', 'refused_to_extract', 'refused_to_fetch', 'scan_failed')
+             AND v.human_label IS NULL
            ORDER BY r.id""").fetchall()
 
 def all_verdicts(conn):
