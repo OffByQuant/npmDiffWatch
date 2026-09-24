@@ -132,11 +132,12 @@ def build_review_input(diff, triage, *, max_chars: int) -> str:
         + (" (FIRST RELEASE - whole-package scan, no prior baseline)" if diff.is_first_release else "")
         + f"\ntriage_score: {triage.score:.0f}\nflagged_locations: {', '.join(seen)}\n"
         + f"untrusted_content_marker: {marker}\n"
-        + (f"\n{pkg_json_text}\n" if pkg_json_text else "")
         + f"\n{marker}\n"
     )
 
-    body_parts, used, truncated = [], len(header) + len(marker) + len(TRUNCATION_NOTE), False
+    # package.json values (description, scripts, dependency names) are author-written: they go inside the markers.
+    body_parts = [pkg_json_text] if pkg_json_text else []
+    used, truncated = len(header) + len(marker) + len(TRUNCATION_NOTE) + len(pkg_json_text), False
     for path in ranked_paths:
         rendered = _render_file(by_path[path])
         if used + len(rendered) + 1 > max_chars:
@@ -196,8 +197,8 @@ def refresh_marker(review_input: str) -> str:
 
 
 def _has_reviewable_content(review_input: str) -> bool:
-    """True if the review input carries any package content: rendered file hunks between the
-    markers, or package.json changes (rendered in the header, before the opening marker)."""
+    """True if the review input carries any package content between the markers: rendered file hunks or
+    package.json changes."""
     marker = _marker_of(review_input)
     _, pkg_json, body, _ = review_input.split(marker, 3)
     return bool(pkg_json.strip() or body.strip())
