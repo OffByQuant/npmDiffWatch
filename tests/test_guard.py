@@ -276,3 +276,8 @@ def test_cap_explain_names_the_binding_limit(tmp_path):
     assert "until this endpoint's speed is measured" in gd.cap_explain()
     gd.tok_s, gd.ctx_tokens = 7867.0, 8_192
     assert "context window" in gd.cap_explain()
+
+
+def test_default_probe_timeout_covers_a_llama_swap_cold_load():
+    # Live: llama-swap loading Gemma 4 12B from cold took longer than 60 s, failing calibration.
+    assert Config().reviewer.probe_timeout == 180.0

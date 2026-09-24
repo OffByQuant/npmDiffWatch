@@ -171,7 +171,7 @@ then `export ANTHROPIC_API_KEY=sk-ant-...` (see §3).
 [reviewer]
 # Model protection (all optional; defaults shown)
 budget_safety = 0.6          # a review may be predicted to use at most this share of `timeout`
-probe_timeout = 60.0         # health probe / calibration timeout
+probe_timeout = 180.0        # health probe / calibration timeout
 slowdown_ratio = 0.3         # below this share of measured speed counts as slow
 degraded_pause_s = 900       # pause after two slow reviews in a row
 host_memory_guard = "auto"   # on for loopback endpoints; true / false to force

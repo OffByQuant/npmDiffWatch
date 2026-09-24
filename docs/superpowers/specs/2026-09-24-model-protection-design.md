@@ -89,7 +89,7 @@ States: **closed** (normal) → **open** (no reviews) → **half-open** (probe) 
 - While open, `admit()` returns `Defer`. Every flagged release in the rest of the batch is parked with the
   new queue reason **`model_busy`**, which does not spend an attempt, and the drain stops.
 - At the start of the next batch the guard goes half-open: it sends a **probe**, a fixed tiny prompt
-  (`max_tokens: 1`, no package content) with timeout `reviewer.probe_timeout` (default 60 s, enough for
+  (`max_tokens: 1`, no package content) with timeout `reviewer.probe_timeout` (default 180 s, enough for
   llama-swap to load a model it had unloaded). If the probe answers in time, the breaker closes and the
   drain resumes; `model_busy` rows drain first, oldest first. If not, it stays open and the batch prints
   `reviewer endpoint X is still busy with an abandoned request; reviews paused`.
@@ -184,7 +184,7 @@ every batch.
 | key | default | purpose |
 |---|---|---|
 | `budget_safety` | 0.6 | fraction of the timeout a review may be predicted to use |
-| `probe_timeout` | 60.0 | half-open probe and calibration timeout (covers llama-swap model load) |
+| `probe_timeout` | 180.0 | half-open probe and calibration timeout (covers llama-swap model load) |
 | `slowdown_ratio` | 0.3 | below this fraction of measured speed counts as degraded |
 | `degraded_pause_s` | 900 | pause after a degradation trip before probing |
 | `host_memory_guard` | `"auto"` | `auto` (on for loopback endpoints) / `true` / `false` |
