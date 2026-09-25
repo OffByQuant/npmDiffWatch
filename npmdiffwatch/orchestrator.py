@@ -541,7 +541,6 @@ def get_evidence(cfg: Config, release_id: int):
         conn.close()
 
 
-_FLAGGED = ("malicious", "suspicious")
 
 
 def _cursor(cfg) -> int:
@@ -735,11 +734,12 @@ def export_dashboard(cfg: Config, out_path=None, generated_at: str = ""):
         conn.close()
     reachable, reviewer_label = _probe_reviewer(cfg)
     age, stale = _poll_age(cur["updated_at"] if cur else None)
+    c = dashboard.counts(rows)
     status = {
         "last_serial": cur["last_serial"] if cur else None,
         "last_poll_age": age, "stale": stale,
-        "releases_total": releases_total, "verdicts_total": len(rows),
-        "flagged_total": sum(1 for r in rows if dashboard.effective_class(r) in _FLAGGED),
+        "releases_total": releases_total, "verdicts_total": c["model_reviewed"],
+        "flagged_total": c["flagged"], "unscanned_total": c["unscanned"],
         "reviewer": reviewer_label, "model_reachable": reachable, "pending_review": pending_review,
         "guard": guard_status(cfg),
         "watchlist": _watchlist_status(cfg),

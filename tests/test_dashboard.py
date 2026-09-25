@@ -161,3 +161,47 @@ def test_the_status_strip_counts_your_judgement(tmp_path):
     store.adjudicate(conn, rid, "benign", "cleared")
     out = orchestrator.export_dashboard(cfg, tmp_path / "d.html")
     assert "0 flagged" in Path(out).read_text()
+
+
+# A release nobody scanned is stored as a model="none" "suspicious" placeholder so it stays in the queue.
+# It is not a model's judgement: no report button, not counted as reviewed or flagged.
+_UNSCANNED = dict(model="none", confidence=0.0,
+                  reasoning="UNREVIEWED: npmdiffwatch refused this tarball (members). Needs manual review.")
+
+
+def test_a_release_nobody_scanned_has_no_report_button():
+    html = dashboard.render_dashboard([_row("never-looked", "1.0.0", "suspicious", **_UNSCANNED)])
+    assert "Report malware on npm" not in html
+    assert "not scanned" in html and "UNREVIEWED: npmdiffwatch refused" in html
+    assert "badge suspicious" not in html
+
+
+def test_your_malicious_label_on_an_unscanned_release_keeps_the_report_button():
+    html = dashboard.render_dashboard([_row("never-looked", "1.0.0", "suspicious", human_label="malicious",
+                                            **_UNSCANNED)])
+    assert "Report malware on npm" in html
+
+
+def test_counts_separate_model_verdicts_from_unscanned():
+    rows = [_row("a", "1", "malicious"), _row("b", "1", "benign"), _row("c", "1", "suspicious", **_UNSCANNED),
+            _row("d", "1", "suspicious", human_label="malicious", **_UNSCANNED)]
+    assert dashboard.counts(rows) == {"releases": 4, "model_reviewed": 2, "flagged": 2, "unscanned": 1}
+
+
+def test_unscanned_ranks_after_flagged_and_before_benign():
+    rows = [_row("ben", "1", "benign"), _row("uns", "1", "suspicious", **_UNSCANNED),
+            _row("sus", "1", "suspicious"), _row("mal", "1", "malicious")]
+    html = dashboard.render_dashboard(rows)
+    pos = [html.index(f'<div class="pkg">{n} ') for n in ("mal", "sus", "uns", "ben")]
+    assert pos == sorted(pos)
+
+
+def test_the_header_does_not_count_unscanned_as_reviewed_or_flagged(tmp_path):
+    cfg = dataclasses.replace(Config(), db_path=tmp_path / "db.sqlite", lock_path=tmp_path / "l")
+    conn = store.connect(cfg); store.init_schema(conn)
+    rid = store.record_release(conn, "never-looked", "1.0.0", 1, False, None, "tgz")
+    store.record_verdict(conn, rid, Verdict("never-looked", "1.0.0", "suspicious", 0.0, [], False, confidence=0.0,
+                                            attack_type="none", reasoning="UNREVIEWED: x", cited_hunk="",
+                                            model="none"))
+    text = Path(orchestrator.export_dashboard(cfg, tmp_path / "d.html")).read_text()
+    assert "0 reviewed by the model" in text and "0 flagged" in text and "1 not scanned" in text

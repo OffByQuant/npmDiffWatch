@@ -53,12 +53,31 @@ def effective_class(row) -> str:
     return (row.get("human_label") or row.get("classification") or "").lower()
 
 
+def unscanned(row) -> bool:
+    """A release nobody looked at: stored as a model="none" placeholder so it stays queued for a person. It is
+    not a judgement, so it is never shown as flagged unless you have labelled it yourself."""
+    return (row.get("model") or "") == "none" and not row.get("human_label")
+
+
+def _flagged(row) -> bool:
+    return not unscanned(row) and effective_class(row) in _FLAGGED
+
+
+def counts(rows) -> dict:
+    """One set of numbers for the header and the status strip."""
+    rows = [dict(r) for r in rows]
+    return {"releases": len(rows),
+            "model_reviewed": sum(1 for r in rows if (r.get("model") or "") != "none"),
+            "flagged": sum(1 for r in rows if _flagged(r)),
+            "unscanned": sum(1 for r in rows if unscanned(r))}
+
+
 def _card(row: dict) -> str:
-    cls = effective_class(row) or "benign"
+    cls = "unscanned" if unscanned(row) else (effective_class(row) or "benign")
     pkg = row.get("package") or ""
     ver = row.get("version") or ""
     e = html.escape
-    flagged = cls in _FLAGGED
+    flagged = _flagged(row)
     attack = row.get("attack_type") or ""
     attack_html = (f'<span class="k">attack</span><span class="v">{e(attack)}</span>'
                    if attack and attack != "none" else "")
@@ -85,11 +104,11 @@ def _card(row: dict) -> str:
     return f"""<div class="card {e(cls)}">
   <div class="head">
     <div class="pkg">{e(pkg)} <span class="ver">{e(ver)}</span></div>
-    <div class="badge {e(cls)}">{e(cls)}</div>
+    <div class="badge {e(cls)}">{"not scanned" if cls == "unscanned" else e(cls)}</div>
   </div>
   <div class="meta">
     {triage_html}
-    <span class="k">confidence</span><span class="v">{_conf_pct(row.get('confidence'))}</span>
+    {"" if cls == "unscanned" else f'<span class="k">confidence</span><span class="v">{_conf_pct(row.get("confidence"))}</span>'}
     {attack_html}
     <span class="k">model</span><span class="v">{e(row.get('model') or '?')}</span>
   </div>
@@ -108,13 +127,14 @@ body{background:var(--bg);color:var(--ink);font-family:-apple-system,BlinkMacSys
 h1{font-size:24px;letter-spacing:-.3px}.sub{color:var(--muted);margin:6px 0 28px;font-size:15px}
 .card{background:var(--panel);border:1px solid var(--line);border-left-width:4px;border-radius:12px;padding:20px 22px;margin-bottom:16px}
 .card.malicious{border-left-color:var(--red)}.card.suspicious{border-left-color:var(--amber)}
-.card.benign{border-left-color:#21372a;opacity:.78}
+.card.benign{border-left-color:#21372a;opacity:.78}.card.unscanned{border-left-color:var(--muted)}
 .head{display:flex;justify-content:space-between;align-items:center;gap:12px}
 .pkg{font-family:var(--mono);font-size:18px;font-weight:600}.ver{color:var(--muted);font-size:15px}
 .badge{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;padding:5px 12px;border-radius:999px}
 .badge.malicious{background:#2d1416;border:1px solid var(--red);color:var(--red)}
 .badge.suspicious{background:#241c08;border:1px solid var(--amber);color:var(--amber)}
 .badge.benign{background:#0f2417;border:1px solid #2c5138;color:var(--green)}
+.badge.unscanned{background:#1c2128;border:1px solid var(--line);color:var(--muted)}
 .meta{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;margin:14px 0;font-size:13px}
 .meta .k{color:var(--muted);text-transform:uppercase;letter-spacing:.5px;font-size:11px}
 .meta .v{font-family:var(--mono);margin-right:8px}
@@ -138,8 +158,9 @@ footer{color:var(--muted);font-size:12.5px;margin-top:28px;text-align:center}
 
 
 def _rank(row) -> int:
-    cls = effective_class(row)
-    return {"malicious": 0, "suspicious": 1}.get(cls, 2)
+    if unscanned(row):
+        return 2
+    return {"malicious": 0, "suspicious": 1}.get(effective_class(row), 3)
 
 
 def _status_strip(status: dict) -> str:
@@ -167,14 +188,14 @@ def _status_strip(status: dict) -> str:
   <span class="stat"><span class="dot {dot}"></span>{e(model_txt)} <code>{e(status.get('reviewer') or '?')}</code></span>
   <span class="stat">last poll: {e(age)}</span>
   <span class="stat">cursor: {e(serial_txt)}</span>
-  <span class="stat">{int(status.get('releases_total') or 0)} releases · {int(status.get('verdicts_total') or 0)} reviewed · {int(status.get('flagged_total') or 0)} flagged</span>
+  <span class="stat">{int(status.get('releases_total') or 0)} releases · {int(status.get('verdicts_total') or 0)} reviewed by the model · {int(status.get('flagged_total') or 0)} flagged{f" · {int(status['unscanned_total'])} not scanned — need manual review" if status.get('unscanned_total') else ""}</span>
 {f'  <span class="stat">{e(pending_txt)}</span>' + chr(10) if pending_txt else ''}{f'  <span class="stat">{e(guard_txt)}</span>' + chr(10) if guard_txt else ''}{f'  <span class="stat">{e(watch_txt)}</span>' + chr(10) if watch_txt else ''}</div>"""
 
 
 def render_dashboard(rows, status: dict = None, generated_at: str = "") -> str:
     # flagged-first, independent of caller ordering (stable within each class).
     rows = sorted((dict(r) for r in rows), key=_rank)
-    flagged = sum(1 for r in rows if effective_class(r) in _FLAGGED)
+    c = counts(rows)
     cards = "\n".join(_card(dict(r)) for r in rows) if rows else \
         '<div class="empty">No verdicts yet. Run <code>npmdiffwatch run</code> first.</div>'
     gen = f" · generated {html.escape(generated_at)}" if generated_at else ""
@@ -183,7 +204,7 @@ def render_dashboard(rows, status: dict = None, generated_at: str = "") -> str:
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>NpmDiffWatch — verdicts</title><style>{_STYLE}</style></head><body>
 <h1>NpmDiffWatch — supply-chain verdicts</h1>
-<div class="sub">{len(rows)} package(s) reviewed · {flagged} flagged for review{gen}</div>
+<div class="sub">{c["model_reviewed"]} package(s) reviewed by the model · {c["flagged"]} flagged for review{f" · {c['unscanned']} not scanned — need manual review" if c["unscanned"] else ""}{gen}</div>
 {strip}
 {cards}
 <footer>Flagged a real attack? Open it on npm and use “Report malware” for takedown. Static, no-execution analysis · 100% local.</footer>
