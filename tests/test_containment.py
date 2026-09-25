@@ -5,7 +5,8 @@ never run, and never written to disk. These AST guards enforce that invariant
 mechanically so it cannot rot silently:
 
   - no dynamic code execution anywhere (eval/exec/compile/__import__)
-  - no shelling out (subprocess / os.system / os.popen)
+  - no shelling out (subprocess / os.system / os.popen), except sandbox.py starting
+    its own parse worker under sandbox-exec or systemd-run, never through a shell
   - fetcher never uses tarfile.extractall and only opens archives in the
     streaming, non-seeking "r|" mode, and never writes files to disk
   - the rules matcher stays pure data (no eval of rule expressions)
@@ -59,6 +60,8 @@ def test_no_subprocess_or_shell_out():
     offenders = []
     for path in SOURCES:
         tree = _parse(path)
+        if path.name == "sandbox.py":       # its one process launch is pinned by the test below
+            continue
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 for a in node.names:
@@ -72,6 +75,18 @@ def test_no_subprocess_or_shell_out():
                 if chain in {"os.system", "os.popen", "os.spawnv", "os.spawnl", "os.execv"}:
                     offenders.append((path.name, chain))
     assert offenders == [], f"shell-out machinery found: {offenders}"
+
+
+def test_sandbox_only_launches_its_worker_without_a_shell():
+    tree = _parse(PKG_DIR / "sandbox.py")
+    calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and _attr_chain(n.func).startswith("subprocess.")]
+    assert [_attr_chain(c.func) for c in calls] == ["subprocess.run"]
+    assert all(kw.arg != "shell" for kw in calls[0].keywords)
+    launchers = {n.value for n in ast.walk(tree) if isinstance(n, ast.Constant) and n.value in
+                 {"sandbox-exec", "systemd-run"}}
+    assert launchers == {"sandbox-exec", "systemd-run"}
+    for chain in ("os.system", "os.popen", "os.spawnv", "os.spawnl", "os.execv"):
+        assert chain not in {_attr_chain(n) for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
 
 
 def test_fetcher_never_uses_extractall():

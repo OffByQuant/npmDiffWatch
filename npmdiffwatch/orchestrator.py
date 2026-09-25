@@ -9,11 +9,11 @@ import time
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 
-from . import ingest, fetcher, differ, engine, rules, notifier, store, reviewer, egress, dashboard
+from . import ingest, fetcher, differ, engine, rules, notifier, store, reviewer, egress, dashboard, sandbox
 from . import guard as guard_mod
 from . import watchlist as watchlist_mod
 from .config import Config
-from .models import Verdict, NewRelease, FiredRule
+from .models import Verdict, NewRelease, FiredRule, Download
 
 logger = logging.getLogger(__name__)
 
@@ -196,10 +196,28 @@ def _scan_failed(cfg, conn, rid, rel, err) -> bool:
 
 
 def _fetch_one(cfg, rel, meta=None):
+    """Sandboxed runs only download here; the tarballs are opened later, in the sandbox."""
     try:
+        if sandbox._backend != "off":
+            return fetcher.download(cfg, rel, meta)
         return fetcher.fetch_artifacts(cfg, rel, meta)
     except Exception as e:
         return e
+
+
+def _scan_release(cfg, rel, ruleset, backend, first_release=False):
+    """Download and scan one release outside the main pipeline (pending, backfill), through the sandbox.
+    Returns (Diff, TriageResult), or None when there is no tarball."""
+    dl = fetcher.download(cfg, rel)
+    if dl is None:
+        return None
+    if not isinstance(dl, Download):         # a skipped new package: nothing was downloaded, nothing to open
+        d = differ.build_diff(dl)
+        return d, engine.triage(d, cfg, ruleset)
+    if first_release:
+        dl = dataclasses.replace(dl, prior_version=None, prior_blob=None)
+    _, d, tr = sandbox.analyze(cfg, dl, None, backend, ruleset)
+    return d, tr
 
 
 _REFUSALS = {
@@ -255,19 +273,28 @@ def _process_fetched(cfg, conn, rvw, ruleset, rel, result, offline=False, guard=
     if result.maintainer_metadata is not None:
         store.update_release_metadata(conn, rid, json.dumps(result.maintainer_metadata))
     store.update_npm_metadata(conn, rid,
-                              scripts_json=json.dumps(result.scripts_field) if result.scripts_field else None,
-                              has_lockfile=result.has_lockfile,
-                              has_shrinkwrap=result.has_shrinkwrap)
+                              scripts_json=json.dumps(result.scripts_field) if result.scripts_field else None)
     if result.is_new_package and cfg.new_package_policy == "skip":
         store.update_stage(conn, rid, "new_package_skipped")
         return True
 
     try:
-        d = differ.build_diff(result)
-        store.update_stage(conn, rid, "diffed")
         prior_meta = (store.get_release_metadata(conn, rel.package, result.prior_version)
                       if result.prior_version else None)
-        tr = engine.triage(d, cfg, ruleset, {"current": result.maintainer_metadata, "prior": prior_meta})
+        context = {"current": result.maintainer_metadata, "prior": prior_meta}
+        if isinstance(result, Download):
+            try:
+                flags, d, tr = sandbox.analyze(cfg, result, context, ruleset=ruleset)
+            except fetcher.RefusedToExtract as e:
+                store.update_stage(conn, rid, "refused_to_extract")
+                _alert_unscanned(cfg, conn, rid, rel, _refusal_note(str(e)))
+                return True
+        else:
+            flags = {"has_lockfile": result.has_lockfile, "has_shrinkwrap": result.has_shrinkwrap}
+            d = differ.build_diff(result)
+            tr = engine.triage(d, cfg, ruleset, context)
+        store.update_npm_metadata(conn, rid, **flags)
+        store.update_stage(conn, rid, "diffed")
         store.update_stage(conn, rid, "triaged", tr.score,
                            json.dumps([r.__dict__ for r in tr.fired_rules]))
         ev = reviewer.build_evidence(d, tr, max_chars=cfg.evidence_max_chars) if tr.escalate else None
@@ -339,6 +366,7 @@ def run_once(cfg: Config, *, seed_if_fresh: bool = True, recent: int | None = No
 
         rvw = _build_reviewer(cfg)
         ruleset = _load_ruleset(cfg)
+        sandbox._backend = sandbox.choose(cfg)
         offline = False
         guard = None
         if rvw is not None:
@@ -445,6 +473,7 @@ def pending_review_counts(cfg: Config) -> dict:
 def list_pending(cfg: Config):
     conn = store.connect(cfg); store.init_schema(conn)
     ruleset = _load_ruleset(cfg)
+    backend = None          # chosen only if a release has to be downloaded again
     items = []
     for row in store.pending_adjudication(conn):
         stored = store.evidence_text(row["evidence"])
@@ -457,10 +486,12 @@ def list_pending(cfg: Config):
             err = "could not be scanned after repeated attempts (see reason); inspect it by hand"
         elif not stored:
             try:
-                art = fetcher.fetch_artifacts(cfg, NewRelease(row["package"], row["version"], row["serial"]))
-                if art is not None:
-                    d = differ.build_diff(art)
-                    tr = engine.triage(d, cfg, ruleset)
+                if backend is None:
+                    backend = sandbox.choose(cfg)
+                scanned = _scan_release(cfg, NewRelease(row["package"], row["version"], row["serial"]), ruleset,
+                                        backend)
+                if scanned is not None:
+                    d, tr = scanned
                     diff_text = reviewer.build_review_input(d, tr, max_chars=cfg.reviewer.max_input_chars)
             except Exception as e:
                 err = f"{type(e).__name__}: {e}"
@@ -695,17 +726,17 @@ def backfill_evidence(cfg: Config, release_id: int | None = None, all_flagged: b
     ruleset = _load_ruleset(cfg)
     results = []
     try:
-        for row in store.releases_needing_evidence(conn, release_id, all_flagged):
+        rows = store.releases_needing_evidence(conn, release_id, all_flagged)
+        backend = sandbox.choose(cfg) if rows else "off"
+        for row in rows:
             pkg, ver = row["package"], row["version"]
             try:
-                art = fetcher.fetch_artifacts(cfg, NewRelease(pkg, ver, row["serial"]))
-                if art is None:
+                scanned = _scan_release(cfg, NewRelease(pkg, ver, row["serial"]), ruleset, backend,
+                                        first_release=bool(row["is_first_release"]))
+                if scanned is None:
                     results.append({"package": pkg, "version": ver, "captured": False, "error": "no tgz"})
                     continue
-                if row["is_first_release"]:
-                    art = dataclasses.replace(art, prior_files={}, prior_version=None, is_new_package=True)
-                d = differ.build_diff(art)
-                tr = engine.triage(d, cfg, ruleset)
+                d, tr = scanned
                 ev = reviewer.build_evidence(d, tr, max_chars=cfg.evidence_max_chars)
                 if not ev:
                     results.append({"package": pkg, "version": ver, "captured": False,

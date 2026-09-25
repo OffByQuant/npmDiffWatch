@@ -11,7 +11,7 @@ import urllib.request
 from datetime import datetime, timezone
 
 from .config import Config
-from .models import NewRelease, ArtifactSet
+from .models import NewRelease, ArtifactSet, Download
 from . import quarantine, deps, egress
 
 
@@ -283,7 +283,9 @@ def _maintainer_metadata(meta: dict) -> dict:
     }
 
 
-def fetch_artifacts(cfg, rel: NewRelease, meta: dict | None = None) -> ArtifactSet | None:
+def download(cfg, rel: NewRelease, meta: dict | None = None) -> Download | ArtifactSet | None:
+    """Everything that needs the network, and nothing that opens the tarballs. Returns an ArtifactSet (with no
+    files) when the release is a new package the config skips, since there is nothing to unpack."""
     if quarantine.is_quarantined(rel.package):
         raise RefusedToFetch(f"quarantined: {rel.package}")
 
@@ -320,33 +322,48 @@ def fetch_artifacts(cfg, rel: NewRelease, meta: dict | None = None) -> ArtifactS
                            has_lockfile=False)
 
     tgz_bytes = _fetch_url(tarball_url, cfg)
-    new_files, new_bins, has_lockfile, has_shrinkwrap = extract_tgz(tgz_bytes, cfg)
-
-    prior_files: dict[str, bytes] = {}
-    prior_bins = None
-    prior_ver = None
+    prior_ver = prior_tgz = None
     dep_findings: list[dict] = []
-
-    if is_new:
-        if cfg.new_package_policy == "surface":
-            new_files = {p: b for p, b in new_files.items() if _is_surface(p)}
-    else:
+    if not is_new:
         prior_ver, prior_url = pred
         try:
             prior_tgz = _fetch_url(prior_url, cfg)
-            prior_files, prior_bins, _, _ = extract_tgz(prior_tgz, cfg)
         except Exception:
-            prior_files, prior_bins = {}, None
-        if prior_bins is not None:
-            # Only what this release adds or changes is a signal; an unchanged bundle republished by CI is not.
-            same = {(b["path"], b.get("sha256")) for b in prior_bins if b.get("sha256")}
-            new_bins = [b for b in new_bins if (b["path"], b.get("sha256")) not in same]
+            prior_tgz = None
         pred_ver_data = versions.get(prior_ver)
         dep_findings = _screen_added_deps(new_ver_data, rel.package, prior_ver, pred_ver_data, cfg)
 
-    return ArtifactSet(rel.package, rel.version, prior_ver, "tgz",
+    return Download(rel.package, rel.version, prior_ver, is_new, tgz_bytes, prior_tgz,
+                    maintainer_metadata=mtmeta, added_dep_findings=dep_findings, scripts_field=scripts)
+
+
+def extract_download(cfg, dl: Download) -> ArtifactSet:
+    """Unpack a Download's tarballs. No network: this is the part that runs in the parse sandbox."""
+    new_files, new_bins, has_lockfile, has_shrinkwrap = extract_tgz(dl.new_blob, cfg)
+
+    prior_files: dict[str, bytes] = {}
+    prior_bins = None
+    if dl.is_new_package:
+        if cfg.new_package_policy == "surface":
+            new_files = {p: b for p, b in new_files.items() if _is_surface(p)}
+    elif dl.prior_blob is not None:
+        try:
+            prior_files, prior_bins, _, _ = extract_tgz(dl.prior_blob, cfg)
+        except Exception:
+            prior_files, prior_bins = {}, None
+    if prior_bins is not None:
+        # Only what this release adds or changes is a signal; an unchanged bundle republished by CI is not.
+        same = {(b["path"], b.get("sha256")) for b in prior_bins if b.get("sha256")}
+        new_bins = [b for b in new_bins if (b["path"], b.get("sha256")) not in same]
+
+    return ArtifactSet(dl.package, dl.version, dl.prior_version, "tgz",
                        new_files, prior_files, {}, new_bins,
-                       is_new_package=is_new, maintainer_metadata=mtmeta,
-                       added_dep_findings=dep_findings,
-                       scripts_field=scripts,
+                       is_new_package=dl.is_new_package, maintainer_metadata=dl.maintainer_metadata,
+                       added_dep_findings=list(dl.added_dep_findings),
+                       scripts_field=dl.scripts_field,
                        has_lockfile=has_lockfile, has_shrinkwrap=has_shrinkwrap)
+
+
+def fetch_artifacts(cfg, rel: NewRelease, meta: dict | None = None) -> ArtifactSet | None:
+    dl = download(cfg, rel, meta)
+    return extract_download(cfg, dl) if isinstance(dl, Download) else dl

@@ -20,6 +20,18 @@ class ArtifactSet:
     has_shrinkwrap: bool = False
 
 @dataclass(frozen=True)
+class Download:
+    """A release's tarballs as downloaded, still unopened, with the registry metadata that came with them. The
+    blobs are unpacked in the parse sandbox, not in the process that downloaded them."""
+    package: str; version: str; prior_version: str | None
+    is_new_package: bool
+    new_blob: bytes
+    prior_blob: bytes | None
+    maintainer_metadata: dict | None = None
+    added_dep_findings: list[dict] = field(default_factory=list)
+    scripts_field: dict | None = None
+
+@dataclass(frozen=True)
 class Hunk:
     old_range: tuple[int, int]; new_range: tuple[int, int]
     added: list[str]; removed: list[str]

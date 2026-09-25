@@ -169,6 +169,25 @@ package content anywhere in the pipeline. The download/extraction caps (`max_dow
 `max_member_bytes`, `max_total_bytes`, `max_decompressed_bytes`, …) bound how much of any tarball is ever
 read into memory.
 
+### The parse sandbox
+
+Not running package code doesn't mean nothing reads it: gzip, tar, JSON and tree-sitter (C code) all parse
+bytes a package author wrote. They run in a separate process that cannot open a network connection, cannot
+write files, and cannot read your home directory outside the Python install and NpmDiffWatch itself:
+
+- **macOS:** Seatbelt (`sandbox-exec`), built in.
+- **Linux:** `systemd-run` (`PrivateNetwork`, `ProtectSystem=strict`, `ProtectHome=tmpfs`, a syscall
+  filter, and memory and time limits).
+
+Each run first checks that the sandbox actually blocks the network, writes and home-directory reads. If it
+doesn't, or no sandbox is available, the default (`parse_sandbox = "auto"`) prints a warning and scans
+without one; `parse_sandbox = "on"` refuses to scan instead. Starting the separate process adds a little time to
+each release.
+
+The sandbox keeps a parser exploit away from the network, the database, other releases and your files. It
+cannot make an exploited parser report honestly on the package that exploited it, so the container/VM
+advice above still applies.
+
 ---
 
 ## 🧩 Bring your own rules
