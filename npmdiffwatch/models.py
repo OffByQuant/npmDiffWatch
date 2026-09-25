@@ -77,3 +77,6 @@ class Verdict:
     cited_hunk: str | None = None
     recommended_action: str | None = None
     model: str | None = None
+    runs_when: str | None = None
+    chain_source: str | None = None
+    chain_sink: str | None = None

@@ -59,6 +59,12 @@ def migrate_schema(conn):
             else:
                 conn.execute(f"ALTER TABLE releases ADD COLUMN {col} TEXT")
             conn.commit()
+    for col in ("runs_when", "chain_source", "chain_sink"):
+        try:
+            conn.execute(f"SELECT {col} FROM verdicts LIMIT 1")
+        except sqlite3.OperationalError:
+            conn.execute(f"ALTER TABLE verdicts ADD COLUMN {col} TEXT")
+            conn.commit()
 
 def get_last_serial(conn) -> int:
     return conn.execute("SELECT last_serial FROM cursor WHERE id=1").fetchone()[0]
@@ -320,15 +326,19 @@ def record_alert(conn, release_id, classification, score, fired_rules_json, dedu
 
 def record_verdict(conn, release_id, verdict) -> int:
     conn.execute("""INSERT INTO verdicts
-        (release_id,classification,confidence,attack_type,reasoning,cited_hunk,model,urgent,created_at)
-        VALUES(?,?,?,?,?,?,?,?,?)
+        (release_id,classification,confidence,attack_type,reasoning,cited_hunk,model,urgent,created_at,
+         runs_when,chain_source,chain_sink)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(release_id) DO UPDATE SET
           classification=excluded.classification, confidence=excluded.confidence,
           attack_type=excluded.attack_type, reasoning=excluded.reasoning,
           cited_hunk=excluded.cited_hunk, model=excluded.model,
-          urgent=excluded.urgent, created_at=excluded.created_at""",
+          urgent=excluded.urgent, created_at=excluded.created_at,
+          runs_when=excluded.runs_when, chain_source=excluded.chain_source, chain_sink=excluded.chain_sink""",
         (release_id, verdict.classification, verdict.confidence, verdict.attack_type,
-         verdict.reasoning, verdict.cited_hunk, verdict.model, int(verdict.urgent), _now()))
+         verdict.reasoning, verdict.cited_hunk, verdict.model, int(verdict.urgent), _now(),
+         getattr(verdict, "runs_when", None), getattr(verdict, "chain_source", None),
+         getattr(verdict, "chain_sink", None)))
     conn.commit()
     return conn.execute("SELECT id FROM verdicts WHERE release_id=?", (release_id,)).fetchone()[0]
 
