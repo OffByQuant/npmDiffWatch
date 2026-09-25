@@ -190,8 +190,10 @@ each release.
 
 The sandbox keeps a parser exploit away from the network, the database, other releases and your files. It
 cannot make an exploited parser report honestly on the package that exploited it, so the container/VM
-advice above still applies. Rules that read registry metadata rather than the tarball (maintainer and publisher
-changes, added-dependency reputation) are evaluated outside the sandbox, so they fire even then.
+advice above still applies. Rules that can be answered from registry metadata are evaluated outside the sandbox too,
+so they fire even then: maintainer and publisher changes, added-dependency reputation, and the package.json
+rules (install scripts, `bin`, `main`, dependencies), checked against the registry's copy of package.json.
+That copy can differ from the package.json inside the tarball; a rule fires if either one triggers it.
 
 ---
 

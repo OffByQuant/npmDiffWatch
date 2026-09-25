@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 
 from .config import Config
 from .models import NewRelease, ArtifactSet, Download
-from . import quarantine, deps, egress
+from . import quarantine, deps, egress, differ
 
 
 class RefusedToExtract(Exception): ...
@@ -334,7 +334,9 @@ def download(cfg, rel: NewRelease, meta: dict | None = None) -> Download | Artif
         dep_findings = _screen_added_deps(new_ver_data, rel.package, prior_ver, pred_ver_data, cfg)
 
     return Download(rel.package, rel.version, prior_ver, is_new, tgz_bytes, prior_tgz,
-                    maintainer_metadata=mtmeta, added_dep_findings=dep_findings, scripts_field=scripts)
+                    maintainer_metadata=mtmeta, added_dep_findings=dep_findings, scripts_field=scripts,
+                    manifest=differ.manifest_fields(new_ver_data),
+                    prior_manifest=differ.manifest_fields(versions.get(prior_ver)) if prior_ver else None)
 
 
 def extract_download(cfg, dl: Download) -> ArtifactSet:

@@ -30,6 +30,8 @@ class Download:
     maintainer_metadata: dict | None = None
     added_dep_findings: list[dict] = field(default_factory=list)
     scripts_field: dict | None = None
+    manifest: dict | None = None            # the registry's package.json for this version (differ fields only)
+    prior_manifest: dict | None = None      # ... and for the version it is compared against
 
 @dataclass(frozen=True)
 class Hunk:

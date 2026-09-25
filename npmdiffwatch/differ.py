@@ -14,6 +14,14 @@ _JSON_FIELDS = {"name", "version", "description", "main", "bin", "scripts",
                 "type", "exports", "imports", "engines"}
 
 
+def manifest_fields(version_data) -> dict | None:
+    """The package.json fields the differ compares, from a registry version document (which also carries the
+    readme, dist info and more)."""
+    if not isinstance(version_data, dict):
+        return None
+    return {k: version_data[k] for k in _JSON_FIELDS if k in version_data}
+
+
 def _json_object(raw: bytes | None) -> dict:
     """An author-written JSON file as a dict: {} when it is missing, broken or not an object. Parsing the bytes
     (not decoded text) accepts a UTF-8 byte-order mark. Never raises: a release that fails to process holds

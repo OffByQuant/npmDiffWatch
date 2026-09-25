@@ -23,6 +23,7 @@ from pathlib import Path
 from . import differ, engine, fetcher, rules
 from .config import Config
 from .models import Diff, Download, FileDiff, FiredRule, Hunk, PkgJsonChange, TriageResult
+from .rules import Rule
 
 logger = logging.getLogger(__name__)
 
@@ -61,8 +62,10 @@ def _cfg_from_dict(d: dict) -> Config:
     return Config(**{k: (Path(v) if k in _PATH_FIELDS and v is not None else v) for k, v in d.items()})
 
 
-def _encode_input(cfg, dl: Download, maintainer_context) -> bytes:
+def _encode_input(cfg, dl: Download, maintainer_context, ruleset) -> bytes:
+    # The parent's loaded rules travel with the request: rule files edited mid-run can't make the two disagree.
     head = {"cfg": _cfg_to_dict(cfg), "maintainer_context": maintainer_context, "sys_path": _import_paths(),
+            "rules": [dataclasses.asdict(r) for r in ruleset],
             "dl": {"package": dl.package, "version": dl.version, "prior_version": dl.prior_version,
                    "is_new_package": dl.is_new_package, "maintainer_metadata": dl.maintainer_metadata,
                    "added_dep_findings": dl.added_dep_findings, "scripts_field": dl.scripts_field,
@@ -77,7 +80,7 @@ def _decode_input(head: dict, stream):
     dl = Download(m["package"], m["version"], m["prior_version"], m["is_new_package"], new, prior,
                   maintainer_metadata=m["maintainer_metadata"], added_dep_findings=m["added_dep_findings"],
                   scripts_field=m["scripts_field"])
-    return _cfg_from_dict(head["cfg"]), dl, head["maintainer_context"]
+    return _cfg_from_dict(head["cfg"]), dl, head["maintainer_context"], [Rule(**r) for r in head["rules"]]
 
 
 # ---- worker -> parent: JSON, checked field by field ----
@@ -291,18 +294,45 @@ def analyze(cfg, dl: Download, maintainer_context, backend: str | None = None, r
     ruleset = ruleset if ruleset is not None else rules.load_rules(cfg.rules_dir)
     if backend == "off":
         art, d, tr = compute(cfg, dl, maintainer_context, ruleset)
-        return {"has_lockfile": art.has_lockfile, "has_shrinkwrap": art.has_shrinkwrap}, d, tr
-    flags, d, tr = _decode_output(_run(cfg, backend, _encode_input(cfg, dl, maintainer_context)), cfg, ruleset)
-    _check(d.package == dl.package and d.version == dl.version, "diff (wrong release)")
-    d.added_dep_findings.extend(dl.added_dep_findings)     # the parent's own findings, not the worker's copy
-    # Ownership and dependency rules read registry metadata, not the tarball, so the parent evaluates them
-    # itself: a worker taken over by the package cannot drop them.
+        flags = {"has_lockfile": art.has_lockfile, "has_shrinkwrap": art.has_shrinkwrap}
+    else:
+        flags, d, tr = _decode_output(_run(cfg, backend, _encode_input(cfg, dl, maintainer_context, ruleset)),
+                                      cfg, ruleset)
+        _check(d.package == dl.package and d.version == dl.version, "diff (wrong release)")
+        d.added_dep_findings.extend(dl.added_dep_findings)     # the parent's own findings, not the worker's copy
+    return flags, d, _with_registry_rules(cfg, dl, d, tr, maintainer_context, ruleset)
+
+
+def _with_registry_rules(cfg, dl: Download, d: Diff, tr: TriageResult, maintainer_context, ruleset) -> TriageResult:
+    """Rules the parent can evaluate from registry metadata, without the tarball, so a worker taken over by the
+    package cannot drop them.
+    - Ownership and dependency rules: the parent's results replace the worker's.
+    - package.json rules, on the registry's copy of package.json (new vs prior version): added to the worker's
+      tarball-based results, each rule once. They also catch a registry manifest that differs from the
+      package.json in the tarball."""
     own = {r.id for r in ruleset if r.applies_to in _PARENT_RULES}
     meta = engine.triage(Diff(d.package, d.version, d.is_first_release, [], [], list(dl.added_dep_findings)),
                          cfg, [r for r in ruleset if r.id in own], maintainer_context)
     fired = [r for r in tr.fired_rules if r.rule not in own] + meta.fired_rules
+    if dl.manifest is not None:
+        have = {r.rule for r in fired}
+        reg = engine.triage(_manifest_diff(dl), cfg, [r for r in ruleset if r.applies_to == "package_json"])
+        fired += [r for r in reg.fired_rules if r.rule not in have]
     score = sum(r.weight for r in fired)
-    return flags, d, TriageResult(score, fired, score >= cfg.threshold_t)
+    return TriageResult(score, fired, score >= cfg.threshold_t)
+
+
+def _manifest_diff(dl: Download) -> Diff:
+    first = dl.prior_manifest is None
+    changes, scripts, text = differ._diff_json(None if first else json.dumps(dl.prior_manifest).encode(),
+                                               json.dumps(dl.manifest).encode())
+    if first:   # as for a tarball: on a first release only an install-time script is a signal
+        changes = [c for c in changes if c.field == "scripts"] if scripts else []
+    md = Diff(dl.package, dl.version, first, [], [], [], changes)
+    object.__setattr__(md, "_lock_meta", {})
+    object.__setattr__(md, "_changed_scripts", scripts)
+    object.__setattr__(md, "_changed_script_text", text)
+    return md
 
 
 # ---- checking that the sandbox actually holds ----
