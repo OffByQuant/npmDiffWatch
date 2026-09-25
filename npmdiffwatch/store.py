@@ -369,7 +369,8 @@ def pending_adjudication(conn):
                   r.evidence, r.stage,
                   v.classification, v.confidence, v.attack_type, v.reasoning, v.cited_hunk, v.model
            FROM releases r JOIN verdicts v ON v.release_id = r.id
-           WHERE r.stage IN ('needs_adjudication', 'refused_to_extract', 'refused_to_fetch', 'scan_failed')
+           WHERE r.stage IN ('needs_adjudication', 'refused_to_extract', 'refused_to_fetch', 'scan_failed',
+                             'reviewed_partial')
              AND v.human_label IS NULL
            ORDER BY r.id""").fetchall()
 
