@@ -1,6 +1,7 @@
 import difflib
 import json
 
+from . import execclass
 from .models import ArtifactSet, Diff, FileDiff, Hunk, PkgJsonChange
 
 
@@ -90,10 +91,18 @@ def build_diff(a: ArtifactSet) -> Diff:
     changed_scripts_set: frozenset = frozenset()
     changed_script_text = ""
     lock_meta: dict[str, bool] = {}
+    classes, loaders = execclass.classify(a.new_files)
+    file_classes: dict[str, list[str]] = {}
+    listed: list[dict] = []
 
     for path in sorted(set(a.new_files) | set(a.prior_files)):
         new, prior = a.new_files.get(path), a.prior_files.get(path)
         if new is not None and prior is not None and new == prior:
+            continue
+        cls, why = classes.get(path, ("not-shipped", "removed in this version"))
+        file_classes[path] = [cls, why]
+        if cls == "inert":
+            listed.append({"path": path, "size": len(new or b""), "class": "inert"})
             continue
         nl, pl = _lines(new or b""), _lines(prior or b"")
 
@@ -128,7 +137,9 @@ def build_diff(a: ArtifactSet) -> Diff:
             changed.append(FileDiff(path, kind, hunks, new_text))
 
     diff = Diff(a.package, a.version, a.prior_version is None, changed,
-                list(a.added_binaries), list(a.added_dep_findings), pkg_changes, _description(a.new_files))
+                list(a.added_binaries), list(a.added_dep_findings), pkg_changes, _description(a.new_files),
+                {p: c for p, c in file_classes.items() if p in {f.path for f in changed} or c[0] == "inert"},
+                {p: ls for p, ls in loaders.items() if p in {f.path for f in changed}}, listed)
     # Side-channel metadata read back via getattr() in facts.build_facts; Diff is
     # frozen, so set through object.__setattr__ rather than plain assignment.
     object.__setattr__(diff, "_lock_meta", lock_meta)

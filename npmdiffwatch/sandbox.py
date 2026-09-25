@@ -20,7 +20,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from . import differ, engine, fetcher, rules
+from . import differ, engine, execclass, fetcher, rules
 from .config import Config
 from .models import Diff, Download, FileDiff, FiredRule, Hunk, PkgJsonChange, TriageResult
 from .rules import Rule
@@ -95,6 +95,7 @@ def _encode_output(art, d: Diff, tr: TriageResult) -> dict:
                      "package_json_changes": [{"field": c.field, "old": c.old, "new": c.new}
                                               for c in d.package_json_changes],
                      "description": d.description,
+                     "file_classes": d.file_classes, "loaders": d.loaders, "listed": d.listed,
                      "lock_meta": getattr(d, "_lock_meta", {}),
                      "changed_scripts": sorted(getattr(d, "_changed_scripts", frozenset())),
                      "changed_script_text": getattr(d, "_changed_script_text", "")},
@@ -159,8 +160,18 @@ def _decode_output(raw: bytes, cfg, ruleset):
         lock_meta = _dict(dd["lock_meta"], "lockfile facts")
         _check(all(type(v) is bool for v in lock_meta.values()), "lockfile facts")
         _check(type(dd["is_first_release"]) is bool, "diff")
+        fc = _dict(dd["file_classes"], "file classes")
+        _check(all(isinstance(v, list) and len(v) == 2 and v[0] in execclass.CLASSES and isinstance(v[1], str)
+                   for v in fc.values()), "file classes")
+        ld = _dict(dd["loaders"], "loaders")
+        for v in ld.values():
+            _strs(v, "loader lines")
+        listed = dd["listed"]
+        _check(isinstance(listed, list) and all(
+            isinstance(x, dict) and set(x) == {"path", "size", "class"} and isinstance(x["path"], str)
+            and type(x["size"]) is int and x["size"] >= 0 and x["class"] == "inert" for x in listed), "listed files")
         d = Diff(_str(dd["package"], "diff"), _str(dd["version"], "diff"), dd["is_first_release"], changed, bins,
-                 [], pkg, _str(dd["description"], "description"))
+                 [], pkg, _str(dd["description"], "description"), fc, ld, listed)
         object.__setattr__(d, "_lock_meta", lock_meta)
         object.__setattr__(d, "_changed_scripts", frozenset(_strs(dd["changed_scripts"], "script list")))
         object.__setattr__(d, "_changed_script_text", _str(dd["changed_script_text"], "script text"))

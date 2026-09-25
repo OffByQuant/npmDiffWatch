@@ -54,6 +54,9 @@ class Diff:
     added_dep_findings: list[dict] = field(default_factory=list)
     package_json_changes: list[PkgJsonChange] = field(default_factory=list)
     description: str = ""          # the new version's package.json description: the author's claim, context only
+    file_classes: dict[str, list[str]] = field(default_factory=dict)   # path -> [when it runs, why]
+    loaders: dict[str, list[str]] = field(default_factory=dict)        # changed data file -> lines that load it
+    listed: list[dict] = field(default_factory=list)                    # changed inert files: path and size only
 
 @dataclass(frozen=True)
 class FiredRule:
