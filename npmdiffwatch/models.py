@@ -57,6 +57,7 @@ class Diff:
     file_classes: dict[str, list[str]] = field(default_factory=dict)   # path -> [when it runs, why]
     loaders: dict[str, list[str]] = field(default_factory=dict)        # changed data file -> lines that load it
     listed: list[dict] = field(default_factory=list)                    # changed inert files: path and size only
+    publishing: dict = field(default_factory=dict)   # set in the parent from registry metadata, never by the worker
 
 @dataclass(frozen=True)
 class FiredRule:

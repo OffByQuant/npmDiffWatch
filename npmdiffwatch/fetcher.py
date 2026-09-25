@@ -310,6 +310,36 @@ def _maintainer_metadata(meta: dict) -> dict:
     }
 
 
+def _publishing(versions: dict, new_version: str, prior_version: str | None, times: dict) -> dict:
+    """How this version and the one before it were published. Facts only: a long CI-published package
+    suddenly published from a personal token is worth a look, but it is never a verdict."""
+    def rec(v):
+        r = versions.get(v)
+        return r if isinstance(r, dict) else {}
+    def prov(v):
+        dist = rec(v).get("dist")
+        att = dist.get("attestations") if isinstance(dist, dict) else None
+        return bool(att.get("provenance")) if isinstance(att, dict) else False
+    def trusted(v):
+        user = rec(v).get("_npmUser")
+        tp = user.get("trustedPublisher") if isinstance(user, dict) else None
+        return tp.get("id") if isinstance(tp, dict) and isinstance(tp.get("id"), str) else None
+    def when(v):
+        try:
+            return datetime.fromisoformat(str(times.get(v)).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    repo = rec(new_version).get("repository")
+    repo = repo.get("url") if isinstance(repo, dict) else repo if isinstance(repo, str) else None
+    t_new, t_old = when(new_version), when(prior_version) if prior_version else None
+    return {"provenance_now": prov(new_version),
+            "provenance_before": prov(prior_version) if prior_version else None,
+            "trusted_publisher_now": trusted(new_version),
+            "trusted_publisher_before": trusted(prior_version) if prior_version else None,
+            "days_since_prior": round((t_new - t_old).total_seconds() / 86400, 1) if t_new and t_old else None,
+            "repository": repo[:300] if isinstance(repo, str) else None}
+
+
 def download(cfg, rel: NewRelease, meta: dict | None = None) -> "Download | ArtifactSet | Removed | None":
     """Everything that needs the network, and nothing that opens the tarballs. Returns an ArtifactSet (with no
     files) when the release is a new package the config skips, since there is nothing to unpack."""
@@ -346,6 +376,8 @@ def download(cfg, rel: NewRelease, meta: dict | None = None) -> "Download | Arti
     # Footprint lookup is one extra request; only do it when the publisher changed.
     mtmeta["low_footprint_publisher"] = bool(
         pub_changed and _low_footprint_publisher(new_ver_data, cfg))
+    mtmeta["publishing"] = _publishing(versions, rel.version, pred[0] if pred else None,
+                                       meta.get("time") if isinstance(meta.get("time"), dict) else {})
     scripts = new_ver_data.get("scripts", {}) or {}
 
     if is_new and cfg.new_package_policy == "skip":

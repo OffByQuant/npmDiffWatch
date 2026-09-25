@@ -311,6 +311,7 @@ def analyze(cfg, dl: Download, maintainer_context, backend: str | None = None, r
                                       cfg, ruleset)
         _check(d.package == dl.package and d.version == dl.version, "diff (wrong release)")
         d.added_dep_findings.extend(dl.added_dep_findings)     # the parent's own findings, not the worker's copy
+    object.__setattr__(d, "publishing", dict((dl.maintainer_metadata or {}).get("publishing") or {}))
     return flags, d, _with_registry_rules(cfg, dl, d, tr, maintainer_context, ruleset)
 
 

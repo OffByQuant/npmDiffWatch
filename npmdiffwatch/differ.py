@@ -139,7 +139,8 @@ def build_diff(a: ArtifactSet) -> Diff:
     diff = Diff(a.package, a.version, a.prior_version is None, changed,
                 list(a.added_binaries), list(a.added_dep_findings), pkg_changes, _description(a.new_files),
                 {p: c for p, c in file_classes.items() if p in {f.path for f in changed} or c[0] == "inert"},
-                {p: ls for p, ls in loaders.items() if p in {f.path for f in changed}}, listed)
+                {p: ls for p, ls in loaders.items() if p in {f.path for f in changed}}, listed,
+                publishing=((a.maintainer_metadata or {}).get("publishing") or {}))
     # Side-channel metadata read back via getattr() in facts.build_facts; Diff is
     # frozen, so set through object.__setattr__ rather than plain assignment.
     object.__setattr__(diff, "_lock_meta", lock_meta)

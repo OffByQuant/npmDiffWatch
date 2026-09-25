@@ -11,7 +11,8 @@ _RULES = rules.load_rules(Path("rules/community"))
 
 
 def _art(prior: dict, new: dict) -> ArtifactSet:
-    enc = lambda d: {k: v.encode() for k, v in d.items()}
+    def enc(d):
+        return {k: v.encode() for k, v in d.items()}
     return ArtifactSet("p", "1.0.1", "1.0.0", "tgz", enc(new), enc(prior), {})
 
 
