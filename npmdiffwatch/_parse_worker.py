@@ -63,10 +63,10 @@ def main() -> None:
     if head.get("probe"):
         out = _probe(head)
     else:
-        from . import fetcher, rules, sandbox
+        from . import fetcher, sandbox
         try:
-            cfg, dl, mc = sandbox._decode_input(head, stdin)
-            out = sandbox._encode_output(*sandbox.compute(cfg, dl, mc, rules.load_rules(cfg.rules_dir)))
+            cfg, dl, mc, ruleset = sandbox._decode_input(head, stdin)
+            out = sandbox._encode_output(*sandbox.compute(cfg, dl, mc, ruleset))
         except fetcher.RefusedToExtract as e:
             out = {"error_type": "RefusedToExtract", "error": str(e)}
         except Exception as e:                  # the parent turns this into a retryable scan failure

