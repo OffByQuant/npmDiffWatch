@@ -108,10 +108,11 @@ def _attempt_review(cfg, conn, rvw, rid, package, version, score, fired_rules, t
 
 
 def _review_escalated(cfg, conn, rvw, d, tr, rid, *, offline=False, guard=None):
+    """Only the LLM confirms a finding: a release it can't review now waits in the queue, with no alert."""
     if rvw is None:
-        notifier.emit(cfg, conn, Verdict(d.package, d.version, "suspicious-heuristic",
-                                         tr.score, tr.fired_rules, False), rid)
-        store.update_stage(conn, rid, "alerted", tr.score, None)
+        # No review input is kept: a heuristic-only setup never drains this queue, so it would only grow the
+        # database. If a reviewer is enabled later, the release is downloaded and scanned again.
+        store.park_for_review(conn, rid, "reviewer_disabled", "the reviewer is disabled in the config", "")
         return
     try:
         text = rvw.prepare(d, tr, cap=guard.input_cap_chars() if guard is not None else None)
@@ -123,10 +124,27 @@ def _review_escalated(cfg, conn, rvw, d, tr, rid, *, offline=False, guard=None):
             store.park_for_review(conn, rid, "endpoint_unreachable", "reviewer endpoint unreachable", text)
         else:
             _attempt_review(cfg, conn, rvw, rid, d.package, d.version, tr.score, tr.fired_rules, text, guard)
-    if store.get_stage(conn, d.package, d.version) == "pending_review":
-        # Not reviewed yet: alert on the heuristic now rather than wait for the queue to drain.
-        notifier.emit(cfg, conn, Verdict(d.package, d.version, "suspicious-heuristic",
-                                         tr.score, tr.fired_rules, False), rid)
+
+
+def _rebuild_review_input(cfg, conn, rvw, row, ruleset, cap):
+    """Download and scan a queued release again (through the sandbox) and build its review input. Returns None,
+    re-queued with the reason, when it can't be downloaded or doesn't fit."""
+    rid = row["release_id"]
+    try:
+        scanned = _scan_release(cfg, NewRelease(row["package"], row["version"], row["serial"]), ruleset,
+                                sandbox._backend)
+        why = "no tarball on npm"
+    except Exception as e:
+        scanned, why = None, f"{type(e).__name__}: {e}"
+    if scanned is None:
+        store.bump_review_attempts(conn, rid)
+        store.park_for_review(conn, rid, "review_failed", f"could not download it again to review ({why})", "")
+        return None
+    try:
+        return rvw.prepare(*scanned, cap=cap)
+    except reviewer.InputTooLarge as e:
+        store.park_for_review(conn, rid, "too_large", str(e), e.text)
+        return None
 
 
 def drain_pending(cfg, conn, rvw, *, auto: bool, reasons=None, limit=None, guard=None) -> int:
@@ -135,7 +153,7 @@ def drain_pending(cfg, conn, rvw, *, auto: bool, reasons=None, limit=None, guard
     releases and exhausted retries — run it with a larger-context model config. Inputs over this endpoint's cap are skipped
     (auto: re-parked as too_large). `limit` caps attempts, not successes. Returns the number reviewed."""
     if auto:
-        reasons = ("model_busy", "endpoint_unreachable", "review_failed")
+        reasons = ("model_busy", "endpoint_unreachable", "review_failed", "reviewer_disabled")
     elif not reasons:
         reasons = ("too_large", "review_failed")
     cap = guard.input_cap_chars() if guard is not None else cfg.reviewer.max_input_chars
@@ -145,6 +163,7 @@ def drain_pending(cfg, conn, rvw, *, auto: bool, reasons=None, limit=None, guard
     rows = sorted(rows,
                   key=lambda r: (r["pending_reason"] != "model_busy", r["release_id"]))
     done = tried = 0
+    ruleset = None
     for row in rows:
         if limit is not None and tried >= limit:
             break
@@ -153,6 +172,11 @@ def drain_pending(cfg, conn, rvw, *, auto: bool, reasons=None, limit=None, guard
             continue
         text = store.review_input(row)
         rid = row["release_id"]
+        if not text:            # queued while the reviewer was disabled: scan it again to build the input
+            ruleset = ruleset if ruleset is not None else _load_ruleset(cfg)
+            text = _rebuild_review_input(cfg, conn, rvw, row, ruleset, cap)
+            if text is None:
+                continue
         if len(text) > cap:
             if auto:
                 explain = guard.cap_explain() if guard is not None else f"cap {cap}"
@@ -419,6 +443,16 @@ def _rules_from_json(s):
     return [FiredRule(r["rule"], r["weight"], r["file"], tuple(r["lines"])) for r in json.loads(s or "[]")]
 
 
+def queued_releases(cfg: Config) -> list[dict]:
+    """Releases waiting for an LLM review, oldest first."""
+    conn = store.connect(cfg); store.init_schema(conn)
+    try:
+        return [{k: r[k] for k in ("package", "version", "triage_score", "pending_reason")}
+                for r in store.pending_reviews(conn)]
+    finally:
+        conn.close()
+
+
 def review_pending(cfg: Config, reasons=None, limit=None):
     """Drain the LLM-review queue with this config's reviewer (e.g. a larger-context model for
     too_large). Takes no scan lock: the watch loop's auto-drain covers different reasons by default."""
@@ -429,6 +463,7 @@ def review_pending(cfg: Config, reasons=None, limit=None):
             return 0, store.pending_review_counts(conn)
         gd = guard_mod.ReviewerGuard(cfg, rvw.backend, conn)
         gd.begin_batch()
+        sandbox._backend = sandbox.choose(cfg)      # queued releases may need to be scanned again
         n = drain_pending(cfg, conn, rvw, auto=False, reasons=reasons, limit=limit, guard=gd)
         return n, store.pending_review_counts(conn)
     finally:

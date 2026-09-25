@@ -27,9 +27,10 @@ new npm releases → diff against the prior version → community rules score th
 State lives in a local SQLite database; nothing is hosted, and nothing leaves your machine except the
 calls to the npm registry and the model endpoint you point it at.
 
-Every alert says how it was reached: a **model verdict** with the code it cites; a **heuristic alert**
-when you run without a model; or **UNREVIEWED — needs manual review** when the tool refused to download or
-unpack a tarball (oversized or malformed archives can hide a payload), with the reason.
+Only the model confirms a finding. Every alert says how it was reached: a **model verdict** with the code
+it cites, or **UNREVIEWED — needs manual review** when the tool refused to download or unpack a tarball
+(oversized or malformed archives can hide a payload), with the reason. A release the rules flag but no model
+has reviewed yet waits in the review queue, listed by `pending`, without an alert.
 
 ---
 
@@ -105,7 +106,8 @@ It reviews each listed package's latest release once, then only new releases of 
 packages are skipped before anything is downloaded, so a watchlist run keeps up with npm easily
 ([details](GETTING-STARTED.md#watch-only-your-packages)).
 
-You can also run with **no model at all** (rules-only heuristic alerts) when you have no GPU or budget.
+You can also run with **no model at all** when you have no GPU or budget: releases the rules flag are
+listed by `pending` for you to look at, and reviewed if you add a model later.
 
 **→ Full setup — endpoints, API keys, scheduling, the dashboard, heuristic-only mode, troubleshooting:
 [GETTING-STARTED.md](GETTING-STARTED.md)**

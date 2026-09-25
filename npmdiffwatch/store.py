@@ -208,7 +208,7 @@ def clear_pending(conn, release_id):
     conn.commit()
 
 def pending_reviews(conn, reasons=None, max_chars=None):
-    sql = ("SELECT id AS release_id, package, version, triage_score, triage_rules, pending_reason, "
+    sql = ("SELECT id AS release_id, package, version, serial, triage_score, triage_rules, pending_reason, "
            "pending_detail, COALESCE(review_attempts,0) AS review_attempts, review_input "
            "FROM releases WHERE stage='pending_review'")
     params = list(reasons or [])
