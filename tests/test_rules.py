@@ -78,3 +78,7 @@ def test_evaluate_boolean_tree():
     node = {"all": [{"bound_call": {"category": "process"}},
                     {"not": {"bound_call": {"category": "network"}}}]}
     assert rules.evaluate(node, ctx) is True
+
+
+def test_import_present_is_rejected_since_nothing_can_match_it():
+    assert rules.validate_rule(_valid_code_rule(match={"import_present": {"module": "child_process"}})) is None

@@ -42,6 +42,16 @@
       - bound_call: {category: decode}
       - bound_call: {category: exec}
 
+- id: js-decode-run
+  description: decode + child_process call co-occur (a decoded command or payload handed to a shell).
+  applies_to: code
+  weight: 45
+  attack_type: obfuscated-loader
+  match:
+    all:
+      - bound_call: {category: decode}
+      - bound_call: {category: process}
+
 - id: js-cred-network
   description: credential access + network egress co-occur (credential exfiltration).
   applies_to: code

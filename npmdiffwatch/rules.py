@@ -15,7 +15,7 @@ _BOOL = {"all", "any", "not"}
 MAX_REGEX_LEN = 1000
 MAX_SUBSTRINGS, MAX_SUBSTRING_LEN = 100, 200
 _PRED_SCOPE = {
-    "bound_call": {"code"}, "import_present": {"code"}, "regex": {"code"},
+    "bound_call": {"code"}, "regex": {"code"},
     "blob_present": {"code"}, "syntax_error": {"code"}, "location_at_least": {"code"},
     "binary_reason": {"binary"}, "dep_reason": {"dep"},
     "pkg_field_changed": {"package_json"}, "pkg_script_added": {"package_json"},
@@ -51,8 +51,6 @@ def _valid_pred_args(name, args, scope) -> bool:
         if "name" in args and not isinstance(args["name"], str):
             return False
         return True
-    if name == "import_present":
-        return isinstance(args, dict) and isinstance(args.get("module"), str)
     if name == "regex":
         if not (isinstance(args, dict) and isinstance(args.get("pattern"), str)):
             return False
@@ -151,8 +149,6 @@ def _pred(name, args, ctx) -> bool:
         if "name" in args and args["name"] in ctx.bound_names:
             return True
         return False
-    if name == "import_present":
-        return args["module"] in ctx.imported_modules
     if name == "regex":
         return any(re.search(args["pattern"], s) for s in ctx.added_strs)
     if name == "blob_present":
