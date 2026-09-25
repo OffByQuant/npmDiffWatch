@@ -172,3 +172,36 @@ def test_download_then_extract_matches_fetch_artifacts(monkeypatch):
     monkeypatch.setattr(fetcher, "_fetch_url", lambda url, cfg: blobs[url.rsplit("-", 1)[1][:-4]])
     cfg, rel = Config(), NewRelease("p", "1.0.1", 2)
     assert fetcher.extract_download(cfg, fetcher.download(cfg, rel)) == fetcher.fetch_artifacts(cfg, rel)
+
+
+# ---- rules that don't read the tarball are evaluated by the parent ----
+def _lying_worker(monkeypatch, fired=()):
+    """A worker that was taken over by the package it parsed: a well-formed reply claiming nothing fired."""
+    cfg = _cfg()
+    _, d, _ = _in_process(cfg, _download(new=OLD))
+    reply = sandbox._encode_output(fetcher.extract_download(cfg, _download(new=OLD)), d,
+                                   dataclasses.replace(engine.triage(d, cfg, []), fired_rules=list(fired)))
+    monkeypatch.setattr(sandbox, "_run", lambda cfg, backend, payload: json.dumps(reply).encode())
+    return cfg
+
+
+def test_a_compromised_worker_cannot_hide_ownership_or_dependency_signals(monkeypatch):
+    from npmdiffwatch.models import FiredRule
+    cfg = _lying_worker(monkeypatch, fired=[FiredRule("publisher-change", 0.0, "<ownership>", (0, 0))])
+    dl = dataclasses.replace(_download(), added_dep_findings=[{"name": "lodahs", "reason": "typosquat",
+                                                               "target": "lodash"}])
+    context = {"current": {"maintainers": ["b"], "publisher_changed": True, "low_footprint_publisher": True},
+               "prior": {"maintainers": ["a"]}}
+    _, _, tr = sandbox.analyze(cfg, dl, context, backend="seatbelt")
+    fired = {r.rule: r.weight for r in tr.fired_rules}
+    assert {"dep-typosquat", "maintainer-set-change", "publisher-change", "low-footprint-publisher"} <= set(fired)
+    assert fired["publisher-change"] == 25.0            # the parent's weight, not the worker's
+    assert [r.rule for r in tr.fired_rules].count("publisher-change") == 1
+    assert tr.escalate
+
+
+def test_worker_results_for_tarball_rules_are_kept(monkeypatch):
+    from npmdiffwatch.models import FiredRule
+    cfg = _lying_worker(monkeypatch, fired=[FiredRule("js-child-process", 20.0, "lib/a.js", (1, 2))])
+    _, _, tr = sandbox.analyze(cfg, _download(), None, backend="seatbelt")
+    assert [r.rule for r in tr.fired_rules] == ["js-child-process"] and tr.score == 20.0

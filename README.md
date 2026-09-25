@@ -186,7 +186,8 @@ each release.
 
 The sandbox keeps a parser exploit away from the network, the database, other releases and your files. It
 cannot make an exploited parser report honestly on the package that exploited it, so the container/VM
-advice above still applies.
+advice above still applies. Rules that read registry metadata rather than the tarball (maintainer and publisher
+changes, added-dependency reputation) are evaluated outside the sandbox, so they fire even then.
 
 ---
 
