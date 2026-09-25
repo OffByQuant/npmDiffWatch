@@ -43,7 +43,7 @@ def _diff_json(old_bytes: bytes | None, new_bytes: bytes | None) -> tuple[list[P
         new_val = new_scripts.get(hook)
         if old_val != new_val and new_val is not None:
             changed_scripts.add(hook)
-    for field in _JSON_FIELDS:
+    for field in sorted(_JSON_FIELDS):
         ov = old.get(field)
         nv = new_json.get(field)
         if ov != nv:

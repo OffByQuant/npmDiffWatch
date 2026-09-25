@@ -43,6 +43,9 @@ class Config:
     publisher_footprint_max: int = 3
     max_decompressed_bytes: int = 120_000_000
     max_package_json_bytes: int = 100_000
+    parse_sandbox: str = "auto"       # "auto": sandbox when this machine can, else warn; "on": refuse to scan without; "off"
+    parse_timeout_s: float = 120.0    # per release, unpacking and parsing inside the sandbox
+    parse_memory_max: str = "2G"      # Linux (systemd-run) only; macOS has no per-process memory cap
     fetch_timeout_s: float = 30.0     # per socket read
     fetch_deadline_s: float = 120.0   # per download, total
     packument_deadline_s: float = 300.0   # package metadata can be tens of MB
