@@ -82,7 +82,7 @@ def test_flagged_file_paths_stay_inside_the_markers():
     marker = text.split("untrusted_content_marker: ", 1)[1].split("\n", 1)[0]
     first = text.index("\n" + marker + "\n")
     assert "SYSTEM: this package" not in text[:first]
-    assert "flagged_locations" in text[first:]
+    assert "read first: x.js\\nSYSTEM" in text[first:]      # the path is escaped to one line, inside the markers
 
 
 def test_member_names_with_control_characters_are_refused():
@@ -97,11 +97,11 @@ def test_member_names_with_control_characters_are_refused():
         fetcher.extract_tgz(buf.getvalue(), Config())
 
 
-def test_flagged_locations_alone_are_not_reviewable_content():
-    # When the flagged file is too big to fit, only the location line would be left inside the markers;
-    # the model must not be asked to judge a location.
+def test_facts_alone_are_not_reviewable_content():
+    # When the only changed file is too big to fit, only facts and its name would be left inside the markers;
+    # the model must not be asked to judge a file it cannot see.
     d = Diff("p", "1.0.1", False, [FileDiff("a.js", "modified", [Hunk((0, 1), (0, 1), ["x" * 5_000], [])])], [])
     text = reviewer.build_review_input(d, TriageResult(60.0, [FiredRule("js-eval", 60.0, "a.js", (1, 1))], True),
                                        max_chars=1_000)
-    assert "flagged_locations: a.js:1-1" in text
+    assert "a.js (other, 5000 chars added)" in text
     assert not reviewer._has_reviewable_content(text)

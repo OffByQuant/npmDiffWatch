@@ -29,7 +29,8 @@ class _FakeBackend:
     escalation_model = None
 
     def __init__(self, payload):
-        self._payload = payload
+        # A complete, install-time chain, so the chain gate lets a malicious verdict stand.
+        self._payload = {"runs_when": "install", "chain_source": "a.js:1", "chain_sink": "a.js:2", **payload}
 
     def complete(self, **kw):
         return json.dumps(self._payload)

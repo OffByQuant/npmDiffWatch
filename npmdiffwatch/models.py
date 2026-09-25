@@ -54,6 +54,10 @@ class Diff:
     added_dep_findings: list[dict] = field(default_factory=list)
     package_json_changes: list[PkgJsonChange] = field(default_factory=list)
     description: str = ""          # the new version's package.json description: the author's claim, context only
+    file_classes: dict[str, list[str]] = field(default_factory=dict)   # path -> [when it runs, why]
+    loaders: dict[str, list[str]] = field(default_factory=dict)        # changed data file -> lines that load it
+    listed: list[dict] = field(default_factory=list)                    # changed inert files: path and size only
+    publishing: dict = field(default_factory=dict)   # set in the parent from registry metadata, never by the worker
 
 @dataclass(frozen=True)
 class FiredRule:
@@ -73,3 +77,6 @@ class Verdict:
     cited_hunk: str | None = None
     recommended_action: str | None = None
     model: str | None = None
+    runs_when: str | None = None
+    chain_source: str | None = None
+    chain_sink: str | None = None

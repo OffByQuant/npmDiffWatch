@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 TERMINAL = {"triaged", "alerted", "reviewed", "new_package_skipped", "needs_adjudication",
             "refused_to_extract", "no_sdist", "refused_to_fetch", "pending_review", "scan_failed",
-            "removed_before_scan"}
+            "removed_before_scan", "reviewed_partial"}
 
 
 def _load_ruleset(cfg):
@@ -61,10 +61,13 @@ def _review_slot(cfg):
     return f
 
 
-def _record(cfg, conn, rid, verdict, score):
+def _record(cfg, conn, rid, verdict, score, partial=False):
     store.clear_pending(conn, rid)
     store.record_verdict(conn, rid, verdict)
     if verdict.classification == "benign":
+        if partial:     # the model could not see every runnable file: reviewed, not cleared
+            store.update_stage(conn, rid, "reviewed_partial", score, None)
+            return
         store.clear_evidence(conn, rid)          # kept only for releases a person may act on
         store.update_stage(conn, rid, "reviewed", score, None)
     elif verdict.classification == "suspicious":
@@ -104,7 +107,7 @@ def _attempt_review(cfg, conn, rvw, rid, package, version, score, fired_rules, t
         # prompt_tokens cover the system prompt as well as the package content, so the chars must too.
         guard.record_success(getattr(rvw.backend, "last_usage", None), time.monotonic() - t0,
                              len(reviewer.SYSTEM_PROMPT) + len(text))
-    _record(cfg, conn, rid, verdict, score)
+    _record(cfg, conn, rid, verdict, score, partial=reviewer.has_unshown_runnable(text))
     return True
 
 

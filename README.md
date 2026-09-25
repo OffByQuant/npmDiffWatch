@@ -32,6 +32,15 @@ it cites, or **UNREVIEWED — needs manual review** when the tool refused to dow
 (oversized or malformed archives can hide a payload), with the reason. A release the rules flag but no model
 has reviewed yet waits in the review queue, listed by `pending`, without an alert.
 
+The model sees facts, not a score. Every changed file that can run is shown, ordered by when it runs: install
+scripts first, then what loads when the package is imported, then commands, other code and data files (with
+the unchanged line that reads each data file). Alongside the code it gets how each file runs, how the release
+was published (provenance, trusted publisher, days since the previous release), the URLs, IPs, secret paths
+and credential variables the added code introduces, and dependency leads. No rule score or rule name reaches
+the model. A **malicious** verdict needs a complete chain in the added code with both ends cited (a secret
+read and then sent, a payload decoded and then run); anything less, or code that runs only as a command, is
+held for a person. A benign verdict on a release whose runnable files did not all fit stays in `pending`.
+
 ---
 
 ## 💡 Why NpmDiffWatch
