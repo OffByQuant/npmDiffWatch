@@ -2,8 +2,11 @@
 
 A scan request is a JSON line followed by the raw tarballs; the reply is the diff and the rules that fired. A
 probe request asks the worker to try what the sandbox should stop, and reports what happened."""
+import hashlib
 import json
+import os
 import socket
+import subprocess
 import sys
 
 
@@ -26,8 +29,31 @@ def _probe(head) -> dict:
     def read():
         with open(head["home_file"], "rb") as f:
             f.read(1)
+    def read_db():
+        with open(head["db_file"], "rb") as f:
+            f.read(1)
+
+    def run_program():
+        subprocess.run(["/usr/bin/true"], capture_output=True, timeout=5)
+
+    seen = {hashlib.sha256(v.encode()).hexdigest() for v in os.environ.values()}
     return {"network": _attempt(net), "write": _attempt(write),
-            "home_read": _attempt(read) if head.get("home_file") else "unknown"}
+            "home_read": _attempt(read) if head.get("home_file") else "unknown",
+            "db_read": _attempt(read_db), "exec": _attempt(run_program), "services": _services(),
+            "env": "leaked" if seen & set(head.get("env_hashes", [])) else "clean"}
+
+
+def _services() -> str:
+    """macOS: can the worker reach LaunchServices, which opens URLs and apps outside the sandbox?"""
+    if sys.platform != "darwin":
+        return "n/a"
+    import ctypes
+    import ctypes.util
+    libc = ctypes.CDLL(ctypes.util.find_library("System"))
+    port = ctypes.c_uint32(0)
+    kr = libc.bootstrap_look_up(ctypes.c_uint32.in_dll(libc, "bootstrap_port"),
+                                b"com.apple.coreservices.launchservicesd", ctypes.byref(port))
+    return "open" if kr == 0 else "blocked"
 
 
 def main() -> None:

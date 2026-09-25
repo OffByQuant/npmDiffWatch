@@ -9,6 +9,7 @@ recomputes the score itself.
 The sandbox keeps a parser exploit from reaching the network, the database, other releases or the user's files.
 It cannot make an exploited parser tell the truth about the package that exploited it."""
 import dataclasses
+import hashlib
 import json
 import logging
 import math
@@ -28,7 +29,11 @@ logger = logging.getLogger(__name__)
 _backend = "off"      # chosen once per run by choose(); "seatbelt" | "systemd" | "off"
 _PATH_FIELDS = ("db_path", "cache_dir", "lock_path", "rules_dir", "top_npm_path")
 _ROOT = Path(__file__).resolve().parent.parent      # the directory npmdiffwatch is imported from
-_PROBE_OK = {"network": "blocked", "write": "blocked"}
+# What the probe must find. home_read may also be "unknown" (no readable file in the home directory to try).
+_PROBE_OK = {"network": "blocked", "write": "blocked", "db_read": "blocked", "env": "clean"}
+_PROBE_OK_SEATBELT = {"exec": "blocked", "services": "blocked"}     # Linux children inherit the unit's limits
+_PKG = _ROOT / "npmdiffwatch"
+_SYSTEMD_ENV = ("PATH", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS")
 _PARENT_RULES = {"maintainer", "dep"}     # rule types computed from registry metadata, never the tarball
 
 
@@ -189,9 +194,24 @@ def _import_paths() -> list[str]:
 
 
 def _readable(cfg) -> list[str]:
-    paths = _import_paths() + [os.path.realpath(sys.prefix), os.path.realpath(sys.base_prefix),
-                               os.path.realpath(cfg.rules_dir)]
+    """Directories the worker may read everything in. A directory that contains npmdiffwatch (the repo root, in
+    a source checkout) is left out: only the package itself is opened up, not the repo's other files."""
+    pkg = str(_PKG.resolve())
+    paths = [p for p in _import_paths() if not (pkg + "/").startswith(p.rstrip("/") + "/")]
+    paths += [pkg, os.path.realpath(sys.prefix), os.path.realpath(sys.base_prefix), os.path.realpath(cfg.rules_dir)]
     return list(dict.fromkeys(paths))
+
+
+def _listable(cfg) -> list[str]:
+    """Directories on the import path that contain npmdiffwatch: listable so the import works, contents closed."""
+    pkg = str(_PKG.resolve())
+    return [p for p in _import_paths() if (pkg + "/").startswith(p.rstrip("/") + "/")]
+
+
+def _private_dirs(cfg) -> list[str]:
+    """The database, cache and lock directories: never readable by the worker, wherever they are."""
+    return list(dict.fromkeys([os.path.realpath(Path(cfg.db_path).parent), os.path.realpath(Path(cfg.lock_path).parent),
+                               os.path.realpath(cfg.cache_dir)]))
 
 
 def _worker_argv() -> list[str]:
@@ -206,10 +226,20 @@ def _quote(p: str) -> str:
 
 
 def _seatbelt_profile(cfg) -> str:
+    """Later rules win. Beyond network and writes it denies: starting any program but this Python (and so
+    `open`), forking, and Mach service lookups (LaunchServices could open a URL for the worker, outside the
+    sandbox)."""
     allow = " ".join(f"(subpath {_quote(p)})" for p in _readable(cfg))
+    listable = " ".join(f"(literal {_quote(p)})" for p in _listable(cfg))
+    private = " ".join(f"(subpath {_quote(p)})" for p in _private_dirs(cfg))
+    exe = " ".join(f"(literal {_quote(p)})" for p in dict.fromkeys([sys.executable, os.path.realpath(sys.executable)]))
     return ("(version 1)\n(allow default)\n(deny network*)\n(deny file-write*)\n"
+            "(deny process-exec*)\n"
+            f"(allow process-exec {exe} (subpath {_quote(os.path.realpath(sys.base_prefix))}))\n"
+            "(deny process-fork)\n(deny mach-lookup)\n"
             f"(deny file-read-data (subpath {_quote(_home())}))\n"
-            f"(allow file-read-data {allow})\n")
+            f"(allow file-read-data {allow}{' ' + listable if listable else ''})\n"
+            f"(deny file-read-data {private})\n")
 
 
 def _seatbelt_cmd(cfg) -> list[str]:
@@ -225,10 +255,14 @@ def _systemd_cmd(cfg) -> list[str]:
     if user:
         props.append("PrivateUsers=yes")        # a user manager needs its own user namespace for the rest
     props += [f"BindReadOnlyPaths=-{p}" for p in _readable(cfg)]
+    props += [f"InaccessiblePaths=-{p}" for p in _private_dirs(cfg)]
     return cmd + [f"--property={p}" for p in props] + ["--"] + _worker_argv()
 
 
 def _run(cfg, backend: str, payload: bytes) -> bytes:
+    # The worker gets none of this process's environment (API keys, tokens). systemd-run only needs what it
+    # takes to reach the service manager; the unit it starts does not inherit these.
+    env = {} if backend == "seatbelt" else {k: os.environ[k] for k in _SYSTEMD_ENV if k in os.environ}
     if backend == "seatbelt":
         cmd = _seatbelt_cmd(cfg)
         cpu = int(cfg.parse_timeout_s)
@@ -239,7 +273,7 @@ def _run(cfg, backend: str, payload: bytes) -> bytes:
         raise SandboxError(f"unknown sandbox {backend!r}")
     try:
         proc = subprocess.run(cmd, input=payload, capture_output=True, timeout=cfg.parse_timeout_s + 10,
-                              preexec_fn=pre)
+                              preexec_fn=pre, env=env)
     except subprocess.TimeoutExpired as e:
         raise SandboxError(f"{backend} sandbox timed out after {cfg.parse_timeout_s:.0f}s") from e
     except OSError as e:
@@ -286,22 +320,42 @@ def _home_sentinel() -> str | None:
     return None
 
 
+_PLAIN_ENV = {"PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "TERM", "TMPDIR", "PWD", "SHLVL", "_",
+              "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS", "__CF_USER_TEXT_ENCODING"}
+
+
 def probe(cfg, backend: str) -> dict:
-    """Run the worker in probe mode: it tries to reach the network, write next to the database, and read a
-    file in the home directory. Returns {"network"|"write"|"home_read": "blocked"|"open"|"unknown"}."""
-    target = Path(cfg.db_path).resolve().parent / f".sandbox-probe-{os.getpid()}"
-    head = {"probe": True, "write_target": str(target), "home_file": _home_sentinel(), "sys_path": _import_paths()}
+    """Run the worker in probe mode. It tries to reach the network, write next to the database, read the
+    database directory and a file in the home directory, start a program, look up a macOS service, and find
+    this process's environment values. Returns {check: "blocked"|"open"|"unknown"|"n/a"}, env "clean"|"leaked"."""
+    db_dir = Path(cfg.db_path).resolve().parent
+    db_dir.mkdir(parents=True, exist_ok=True)
+    target = db_dir / f".sandbox-probe-write-{os.getpid()}"
+    sentinel = db_dir / f".sandbox-probe-read-{os.getpid()}"
+    sentinel.write_text("x")
+    # Hashes of this process's environment values (not the values): the worker reports any it can see.
+    env_hashes = sorted({hashlib.sha256(v.encode()).hexdigest() for k, v in os.environ.items()
+                         if k not in _PLAIN_ENV and not k.startswith("LC_") and len(v) >= 8})
+    head = {"probe": True, "write_target": str(target), "db_file": str(sentinel), "home_file": _home_sentinel(),
+            "env_hashes": env_hashes, "sys_path": _import_paths()}
     try:
         raw = _run(cfg, backend, json.dumps(head).encode() + b"\n")
     finally:
-        if target.exists():
-            target.unlink()
+        for p in (target, sentinel):
+            if p.exists():
+                p.unlink()
     try:
         res = json.loads(raw)
     except ValueError as e:
         raise SandboxError(f"sandbox probe sent back something that is not JSON: {e}") from e
-    _check(isinstance(res, dict) and set(res) == {"network", "write", "home_read"}, "probe result")
+    _check(isinstance(res, dict) and set(res) == {"network", "write", "home_read", "db_read", "exec", "services",
+                                                  "env"}, "probe result")
     return res
+
+
+def _holds(res: dict, backend: str) -> bool:
+    need = {**_PROBE_OK, **(_PROBE_OK_SEATBELT if backend == "seatbelt" else {})}
+    return all(res.get(k) == v for k, v in need.items()) and res.get("home_read") != "open"
 
 
 def choose(cfg, which=shutil.which, probe=probe, platform=sys.platform) -> str:
@@ -316,7 +370,7 @@ def choose(cfg, which=shutil.which, probe=probe, platform=sys.platform) -> str:
     if backend:
         try:
             res = probe(cfg, backend)
-            if all(res.get(k) == v for k, v in _PROBE_OK.items()) and res.get("home_read") != "open":
+            if _holds(res, backend):
                 return backend
             why = f"the {backend} sandbox did not hold: {res}"
         except SandboxError as e:

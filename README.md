@@ -174,14 +174,16 @@ read into memory.
 ### The parse sandbox
 
 Not running package code doesn't mean nothing reads it: gzip, tar, JSON and tree-sitter (C code) all parse
-bytes a package author wrote. They run in a separate process that cannot open a network connection, cannot
-write files, and cannot read your home directory outside the Python install and NpmDiffWatch itself:
+bytes a package author wrote. They run in a separate process that gets none of your environment variables (no API
+keys), cannot open a network connection, cannot write files, cannot read the database, and cannot read your
+home directory outside the Python install and the NpmDiffWatch package itself:
 
-- **macOS:** Seatbelt (`sandbox-exec`), built in.
+- **macOS:** Seatbelt (`sandbox-exec`), built in. It also cannot start other programs or reach system
+  services (which could otherwise open a URL on its behalf).
 - **Linux:** `systemd-run` (`PrivateNetwork`, `ProtectSystem=strict`, `ProtectHome=tmpfs`, a syscall
   filter, and memory and time limits).
 
-Each run first checks that the sandbox actually blocks the network, writes and home-directory reads. If it
+Each run first checks that the sandbox actually holds: the worker tries each of these and must fail. If it
 doesn't, or no sandbox is available, the default (`parse_sandbox = "auto"`) prints a warning and scans
 without one; `parse_sandbox = "on"` refuses to scan instead. Starting the separate process adds a little time to
 each release.
