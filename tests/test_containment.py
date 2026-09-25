@@ -6,7 +6,8 @@ mechanically so it cannot rot silently:
 
   - no dynamic code execution anywhere (eval/exec/compile/__import__)
   - no shelling out (subprocess / os.system / os.popen), except sandbox.py starting
-    its own parse worker under sandbox-exec or systemd-run, never through a shell
+    its own parse worker under sandbox-exec or systemd-run, never through a shell,
+    and the worker's self-check trying to start /usr/bin/true (the sandbox must stop it)
   - fetcher never uses tarfile.extractall and only opens archives in the
     streaming, non-seeking "r|" mode, and never writes files to disk
   - the rules matcher stays pure data (no eval of rule expressions)
@@ -60,7 +61,7 @@ def test_no_subprocess_or_shell_out():
     offenders = []
     for path in SOURCES:
         tree = _parse(path)
-        if path.name == "sandbox.py":       # its one process launch is pinned by the test below
+        if path.name in ("sandbox.py", "_parse_worker.py"):     # their process launches are pinned below
             continue
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
@@ -87,6 +88,21 @@ def test_sandbox_only_launches_its_worker_without_a_shell():
     assert launchers == {"sandbox-exec", "systemd-run"}
     for chain in ("os.system", "os.popen", "os.spawnv", "os.spawnl", "os.execv"):
         assert chain not in {_attr_chain(n) for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
+
+
+def test_parse_worker_only_tries_to_start_true_in_its_self_check():
+    tree = _parse(PKG_DIR / "_parse_worker.py")
+    innermost = {}      # ast.walk visits outer functions first, so the last one written is the innermost
+    for fn in ast.walk(tree):
+        if isinstance(fn, ast.FunctionDef):
+            for c in ast.walk(fn):
+                if isinstance(c, ast.Call) and _attr_chain(c.func).startswith("subprocess."):
+                    innermost[id(c)] = (fn.name, c)
+    calls = list(innermost.values())
+    assert [(name, _attr_chain(c.func)) for name, c in calls] == [("run_program", "subprocess.run")]
+    [(_, call)] = calls
+    assert isinstance(call.args[0], ast.List) and [e.value for e in call.args[0].elts] == ["/usr/bin/true"]
+    assert all(kw.arg != "shell" for kw in call.keywords)
 
 
 def test_fetcher_never_uses_extractall():

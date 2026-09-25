@@ -55,9 +55,34 @@ def _in_process(cfg, dl):
 
 
 # ---- the sandbox really denies what it claims ----
+_HELD = {"network": "blocked", "write": "blocked", "home_read": "blocked", "db_read": "blocked",
+         "exec": "blocked", "services": "blocked", "env": "clean"}
+
+
 @seatbelt
-def test_seatbelt_denies_network_writes_and_home_reads():
-    assert sandbox.probe(_cfg(), "seatbelt") == {"network": "blocked", "write": "blocked", "home_read": "blocked"}
+def test_seatbelt_denies_network_writes_reads_programs_services_and_secrets(tmp_path, monkeypatch):
+    monkeypatch.setenv("NPMDIFFWATCH_CANARY_KEY", "sk-canary")
+    cfg = _cfg(tmp_path)
+    assert sandbox.probe(cfg, "seatbelt") == _HELD
+
+
+@seatbelt
+def test_seatbelt_denies_reading_a_database_inside_the_repo(monkeypatch):
+    repo_db = Path(".diffwatch-probe-test/db.sqlite").resolve()      # next to the code the worker may read
+    repo_db.parent.mkdir(exist_ok=True)
+    try:
+        assert sandbox.probe(_cfg(db_path=repo_db), "seatbelt")["db_read"] == "blocked"
+    finally:
+        repo_db.parent.rmdir()
+
+
+def test_the_worker_gets_no_environment_from_the_parent(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-canary")
+    seen = {}
+    monkeypatch.setattr(sandbox.subprocess, "run",
+                        lambda cmd, **kw: seen.update(kw) or type("P", (), {"returncode": 0, "stdout": b"{}"})())
+    sandbox._run(_cfg(), "seatbelt", b"{}\n")
+    assert "sk-canary" not in str(seen["env"])
 
 
 # ---- results through the sandbox match the in-process scan ----
@@ -122,13 +147,13 @@ def test_score_and_escalation_are_recomputed_by_the_parent():
 
 # ---- choosing a sandbox ----
 def test_auto_uses_the_platform_sandbox_when_it_passes_the_probe():
-    ok = {"network": "blocked", "write": "blocked", "home_read": "blocked"}
+    ok = _HELD
     assert sandbox.choose(_cfg(), which=lambda b: True, probe=lambda c, b: ok, platform="darwin") == "seatbelt"
     assert sandbox.choose(_cfg(), which=lambda b: True, probe=lambda c, b: ok, platform="linux") == "systemd"
 
 
 def test_auto_without_a_working_sandbox_scans_unsandboxed_and_says_so(capsys):
-    leaky = {"network": "open", "write": "blocked", "home_read": "blocked"}
+    leaky = {**_HELD, "exec": "open"}
     assert sandbox.choose(_cfg(), which=lambda b: True, probe=lambda c, b: leaky, platform="darwin") == "off"
     assert sandbox.choose(_cfg(), which=lambda b: False, probe=None, platform="linux") == "off"
     assert "WARNING" in capsys.readouterr().out
@@ -148,6 +173,8 @@ def test_systemd_command_denies_network_writes_and_home():
     for prop in ("PrivateNetwork=yes", "ProtectSystem=strict", "ProtectHome=tmpfs", "NoNewPrivileges=yes",
                  "SystemCallFilter=@system-service", "MemoryMax=", "RuntimeMaxSec="):
         assert prop in cmd
+    db_dir = str(Path(_cfg().db_path).resolve().parent)
+    assert f"InaccessiblePaths=-{db_dir}" in cmd
 
 
 # ---- the pipeline uses it ----
