@@ -39,4 +39,24 @@ def test_the_parent_sets_publishing_not_the_worker():
                   tgz({"package.json": b'{"name":"p","version":"1.0.0"}', "a.js": b"0"}),
                   maintainer_metadata={"maintainers": ["m"], "publishing": pub})
     _, d, _ = sandbox.analyze(Config(), dl, None, backend="off")
-    assert d.publishing == pub
+    assert d.publishing == {**pub, "publisher_changed": False, "maintainers_changed": None}
+
+
+def test_naive_and_aware_times_do_not_raise():
+    p = fetcher._publishing({"1.0.0": {}, "1.0.1": {}}, "1.0.1", "1.0.0",
+                            {"1.0.0": "2026-09-01T00:00:00", "1.0.1": "2026-09-11T12:00:00.000Z"})
+    assert p["days_since_prior"] is None
+
+
+def test_publisher_and_maintainer_changes_are_facts():
+    def tgz(files):
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w:gz") as t:
+            for n, b in files.items():
+                ti = tarfile.TarInfo(f"package/{n}"); ti.size = len(b); t.addfile(ti, io.BytesIO(b))
+        return buf.getvalue()
+    cur = {"maintainers": ["a", "b"], "publisher_changed": True, "publishing": {"provenance_now": False}}
+    dl = Download("p", "1.0.1", "1.0.0", False, tgz({"package.json": b'{"name":"p","version":"1.0.1"}', "a.js": b"1"}),
+                  tgz({"package.json": b'{"name":"p","version":"1.0.0"}', "a.js": b"0"}), maintainer_metadata=cur)
+    _, d, _ = sandbox.analyze(Config(), dl, {"current": cur, "prior": {"maintainers": ["a"]}}, backend="off")
+    assert d.publishing["publisher_changed"] is True and d.publishing["maintainers_changed"] is True

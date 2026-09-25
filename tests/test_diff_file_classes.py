@@ -71,3 +71,26 @@ def test_decode_rejects_a_bad_file_class(bad):
     out["diff"].update(bad)
     with pytest.raises(sandbox.SandboxError):
         sandbox._decode_output(json.dumps(out).encode(), Config(), _RULES)
+
+
+def test_a_code_file_named_like_a_doc_is_diffed():
+    d = differ.build_diff(_art({"package.json": _PJ0, "index.js": ""},
+                               {"package.json": _PJ, "index.js": "", "lib/notice.js": "eval(x)"}))
+    assert "lib/notice.js" in {f.path for f in d.changed}
+
+
+def test_a_removed_inert_file_is_listed_not_diffed():
+    d = differ.build_diff(_art({"package.json": _PJ0, "index.js": "", "dist/a.js.map": "x" * 900_000},
+                               {"package.json": _PJ, "index.js": ""}))
+    assert "dist/a.js.map" not in {f.path for f in d.changed}
+    assert d.listed == [{"path": "dist/a.js.map", "size": 0, "class": "inert"}]
+
+
+def test_the_worker_cannot_supply_publishing():
+    d = differ.build_diff(_art({"package.json": _PJ0, "index.js": ""}, {"package.json": _PJ, "index.js": "1"}))
+    tr = engine.triage(d, Config(), _RULES)
+    art = type("A", (), {"has_lockfile": False, "has_shrinkwrap": False})()
+    out = sandbox._encode_output(art, d, tr)
+    out["diff"]["publishing"] = {"provenance_now": True}
+    _, back, _ = sandbox._decode_output(json.dumps(out).encode(), Config(), _RULES)
+    assert back.publishing == {}

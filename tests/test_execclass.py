@@ -79,3 +79,9 @@ def test_an_inert_looking_file_that_shipped_code_reads_is_data():
 def test_odd_input_never_raises():
     classes, loaders = execclass.classify({"package.json": b"{not json", "a.js": b"\xff\xfe require('"})
     assert set(classes) == {"package.json", "a.js"} and loaders == {}
+
+
+def test_a_code_file_is_never_inert_by_its_name():
+    classes, _ = execclass.classify({"package.json": _pkg(), "lib/notice.js": b"x()", "history.js": b"x()",
+                                     "setup.md": b"#!/usr/bin/env node\nx()\n"})
+    assert all(classes[p][0] == "other" for p in ("lib/notice.js", "history.js", "setup.md"))

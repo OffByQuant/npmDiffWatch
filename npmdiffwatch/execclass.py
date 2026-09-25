@@ -150,10 +150,10 @@ def classify(files: dict) -> tuple[dict[str, tuple[str, str]], dict[str, list[st
         base = segs[-1]
         if _NOT_SHIPPED & set(segs[:-1]) or ".test." in base or ".spec." in base:
             classes[p] = ("not-shipped", "test, example or docs path")
+        elif _is_code(p, files):         # before the name test: a name never makes code inert
+            classes[p] = ("other", "shipped code; no entry point names it")
         elif base.endswith(_INERT_EXT) or base.split(".")[0] in _INERT_NAMES:
             classes[p] = ("inert", "documentation, styles, source map or type declarations")
-        elif _is_code(p, files):
-            classes[p] = ("other", "shipped code; no entry point names it")
         else:
             classes[p] = ("data", "data file shipped with the package")
     shipped = [p for p, (c, _) in classes.items() if c in ("install", "load", "command", "other")]

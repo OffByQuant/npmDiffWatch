@@ -329,6 +329,11 @@ def _publishing(versions: dict, new_version: str, prior_version: str | None, tim
             return datetime.fromisoformat(str(times.get(v)).replace("Z", "+00:00"))
         except ValueError:
             return None
+    def _days(a, b):
+        try:
+            return round((a - b).total_seconds() / 86400, 1) if a and b else None
+        except TypeError:          # one timestamp without a timezone: no fact rather than no scan
+            return None
     repo = rec(new_version).get("repository")
     repo = repo.get("url") if isinstance(repo, dict) else repo if isinstance(repo, str) else None
     t_new, t_old = when(new_version), when(prior_version) if prior_version else None
@@ -336,7 +341,7 @@ def _publishing(versions: dict, new_version: str, prior_version: str | None, tim
             "provenance_before": prov(prior_version) if prior_version else None,
             "trusted_publisher_now": trusted(new_version),
             "trusted_publisher_before": trusted(prior_version) if prior_version else None,
-            "days_since_prior": round((t_new - t_old).total_seconds() / 86400, 1) if t_new and t_old else None,
+            "days_since_prior": _days(t_new, t_old),
             "repository": repo[:300] if isinstance(repo, str) else None}
 
 

@@ -20,7 +20,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from . import differ, engine, execclass, fetcher, rules
+from . import differ, engine, execclass, facts, fetcher, rules
 from .config import Config
 from .models import Diff, Download, FileDiff, FiredRule, Hunk, PkgJsonChange, TriageResult
 from .rules import Rule
@@ -298,6 +298,18 @@ def _run(cfg, backend: str, payload: bytes) -> bytes:
     return proc.stdout
 
 
+def _publishing(dl: Download, maintainer_context) -> dict:
+    """Publishing facts, computed here in the parent from registry metadata; the worker never supplies them."""
+    meta = dl.maintainer_metadata or {}
+    pub = dict(meta.get("publishing") or {})
+    if pub:
+        pub["publisher_changed"] = bool(meta.get("publisher_changed"))
+        ctx = maintainer_context or {}
+        cur, prior = facts._roles_set(ctx.get("current")), facts._roles_set(ctx.get("prior"))
+        pub["maintainers_changed"] = cur != prior if cur and prior else None
+    return pub
+
+
 def analyze(cfg, dl: Download, maintainer_context, backend: str | None = None, ruleset=None):
     """Unpack, diff and triage one download. Returns ({has_lockfile, has_shrinkwrap}, Diff, TriageResult).
     Raises fetcher.RefusedToExtract when the tarball breaks a limit, SandboxError when the worker fails."""
@@ -311,7 +323,7 @@ def analyze(cfg, dl: Download, maintainer_context, backend: str | None = None, r
                                       cfg, ruleset)
         _check(d.package == dl.package and d.version == dl.version, "diff (wrong release)")
         d.added_dep_findings.extend(dl.added_dep_findings)     # the parent's own findings, not the worker's copy
-    object.__setattr__(d, "publishing", dict((dl.maintainer_metadata or {}).get("publishing") or {}))
+    object.__setattr__(d, "publishing", _publishing(dl, maintainer_context))
     return flags, d, _with_registry_rules(cfg, dl, d, tr, maintainer_context, ruleset)
 
 

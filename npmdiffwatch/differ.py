@@ -92,6 +92,7 @@ def build_diff(a: ArtifactSet) -> Diff:
     changed_script_text = ""
     lock_meta: dict[str, bool] = {}
     classes, loaders = execclass.classify(a.new_files)
+    prior_classes, _ = execclass.classify({p: b for p, b in a.prior_files.items() if p not in a.new_files})
     file_classes: dict[str, list[str]] = {}
     listed: list[dict] = []
 
@@ -99,7 +100,8 @@ def build_diff(a: ArtifactSet) -> Diff:
         new, prior = a.new_files.get(path), a.prior_files.get(path)
         if new is not None and prior is not None and new == prior:
             continue
-        cls, why = classes.get(path, ("not-shipped", "removed in this version"))
+        cls, why = classes.get(path) or (prior_classes[path] if prior_classes.get(path, ("",))[0] == "inert"
+                                         else ("not-shipped", "removed in this version"))
         file_classes[path] = [cls, why]
         if cls == "inert":
             listed.append({"path": path, "size": len(new or b""), "class": "inert"})
@@ -136,11 +138,11 @@ def build_diff(a: ArtifactSet) -> Diff:
             new_text = new.decode("utf-8", errors="replace") if new is not None else None
             changed.append(FileDiff(path, kind, hunks, new_text))
 
+    changed_paths = {f.path for f in changed}
     diff = Diff(a.package, a.version, a.prior_version is None, changed,
                 list(a.added_binaries), list(a.added_dep_findings), pkg_changes, _description(a.new_files),
-                {p: c for p, c in file_classes.items() if p in {f.path for f in changed} or c[0] == "inert"},
-                {p: ls for p, ls in loaders.items() if p in {f.path for f in changed}}, listed,
-                publishing=((a.maintainer_metadata or {}).get("publishing") or {}))
+                {p: c for p, c in file_classes.items() if p in changed_paths or c[0] == "inert"},
+                {p: ls for p, ls in loaders.items() if p in changed_paths}, listed)
     # Side-channel metadata read back via getattr() in facts.build_facts; Diff is
     # frozen, so set through object.__setattr__ rather than plain assignment.
     object.__setattr__(diff, "_lock_meta", lock_meta)
