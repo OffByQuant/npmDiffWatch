@@ -274,7 +274,6 @@ class FileFacts:
     location_weight: float
     bound_categories: frozenset
     bound_names: frozenset
-    imported_modules: frozenset
     blob_present: bool
     syntax_error: bool
     added_strs: tuple
@@ -300,11 +299,11 @@ def _file_facts(fd) -> FileFacts:
     lines = (fd.hunks[0].new_range[0] + 1, fd.hunks[-1].new_range[1])
     loc = classify_location(fd.path)
     if fd.new_text is None or not _is_js(fd.path):
-        return FileFacts(fd.path, lines, loc, frozenset(), frozenset(), frozenset(), False, False, added_strs)
+        return FileFacts(fd.path, lines, loc, frozenset(), frozenset(), False, False, added_strs)
     tree = _parse_js(fd.new_text)
     if tree is None:
         blob = _blob_present(added_strs)
-        return FileFacts(fd.path, lines, loc, frozenset(), frozenset(), frozenset(), blob, False, added_strs)
+        return FileFacts(fd.path, lines, loc, frozenset(), frozenset(), blob, False, added_strs)
     try:
         cats, names = _find_categories(tree, added_lines)
         cats.update(_find_dynamic_imports(tree, added_lines))
@@ -312,9 +311,9 @@ def _file_facts(fd) -> FileFacts:
             cats.add("proto")
         blob = _blob_present(added_strs)
         return FileFacts(fd.path, lines, loc, frozenset(cats), frozenset(names),
-                         frozenset(), blob, False, added_strs)
+                         blob, False, added_strs)
     except Exception:
-        return FileFacts(fd.path, lines, loc, frozenset(), frozenset(), frozenset(), False, False, added_strs)
+        return FileFacts(fd.path, lines, loc, frozenset(), frozenset(), False, False, added_strs)
 
 
 def _normalize_binaries(added_binaries):
