@@ -44,7 +44,7 @@ def init_schema(conn): conn.executescript(SCHEMA); conn.commit(); migrate_schema
 def migrate_schema(conn):
     for col in ("maintainer_metadata", "evidence", "packument_json", "scripts_json", "has_lockfile", "has_shrinkwrap",
                 "review_attempts", "pending_reason", "pending_detail", "review_input", "review_input_chars",
-                "scan_attempts"):
+                "scan_attempts", "removed_reason", "removed_at"):
         try:
             conn.execute(f"SELECT {col} FROM releases LIMIT 1")
         except sqlite3.OperationalError:
@@ -269,6 +269,15 @@ def mark_baseline(conn, package, result) -> str:
 def baseline_counts(conn, names) -> tuple:
     names = set(names)
     return len(names & _baselined(conn)), len(names)
+
+def record_removed(conn, release_id, reason, at):
+    conn.execute("UPDATE releases SET stage='removed_before_scan', removed_reason=?, removed_at=? WHERE id=?",
+                 (reason, at, release_id))
+    conn.commit()
+
+def removed_counts(conn) -> dict:
+    return dict(conn.execute("SELECT removed_reason, count(*) FROM releases WHERE stage='removed_before_scan' "
+                             "GROUP BY removed_reason").fetchall())
 
 def pending_review_counts(conn) -> dict:
     return dict(conn.execute("SELECT pending_reason, count(*) FROM releases WHERE stage='pending_review' "

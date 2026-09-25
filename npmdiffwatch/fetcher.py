@@ -8,6 +8,7 @@ import tarfile
 import time
 import urllib.error
 import urllib.request
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from .config import Config
@@ -18,6 +19,15 @@ from . import quarantine, deps, egress, differ
 class RefusedToExtract(Exception): ...
 class RefusedToFetch(Exception): ...
 class MetadataUnavailable(Exception): ...
+
+
+@dataclass(frozen=True)
+class Removed:
+    """The registry no longer serves this release. `kind` is "unpublished" when npm marks the whole package
+    removed (`time.unpublished`, with its time in `at`), "version_gone" when the package is live but this
+    version is missing (no marker, no time)."""
+    kind: str
+    at: str | None = None
 
 
 class _BoundedReader:
@@ -283,7 +293,7 @@ def _maintainer_metadata(meta: dict) -> dict:
     }
 
 
-def download(cfg, rel: NewRelease, meta: dict | None = None) -> Download | ArtifactSet | None:
+def download(cfg, rel: NewRelease, meta: dict | None = None) -> "Download | ArtifactSet | Removed | None":
     """Everything that needs the network, and nothing that opens the tarballs. Returns an ArtifactSet (with no
     files) when the release is a new package the config skips, since there is nothing to unpack."""
     if quarantine.is_quarantined(rel.package):
@@ -292,11 +302,17 @@ def download(cfg, rel: NewRelease, meta: dict | None = None) -> Download | Artif
     meta = meta if meta is not None else _packument(rel.package, cfg)
     if meta == {}:        # a failed download, not a missing package: retry, don't mark it "nothing to scan"
         raise MetadataUnavailable(f"could not download package metadata for {rel.package}")
+    times = (meta or {}).get("time")
+    unpublished = times.get("unpublished") if isinstance(times, dict) else None
+    if isinstance(unpublished, dict):
+        return Removed("unpublished", unpublished.get("time"))
     if not meta or "versions" not in meta:
         return None
 
     versions = meta.get("versions", {})
-    new_ver_data = versions.get(rel.version)
+    if rel.version not in versions:
+        return Removed("version_gone")
+    new_ver_data = versions[rel.version]
     if not new_ver_data:
         return None
 
@@ -366,6 +382,6 @@ def extract_download(cfg, dl: Download) -> ArtifactSet:
                        has_lockfile=has_lockfile, has_shrinkwrap=has_shrinkwrap)
 
 
-def fetch_artifacts(cfg, rel: NewRelease, meta: dict | None = None) -> ArtifactSet | None:
+def fetch_artifacts(cfg, rel: NewRelease, meta: dict | None = None) -> "ArtifactSet | Removed | None":
     dl = download(cfg, rel, meta)
     return extract_download(cfg, dl) if isinstance(dl, Download) else dl

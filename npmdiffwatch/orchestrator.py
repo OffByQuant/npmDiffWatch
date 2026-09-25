@@ -18,7 +18,8 @@ from .models import Verdict, NewRelease, FiredRule, Download
 logger = logging.getLogger(__name__)
 
 TERMINAL = {"triaged", "alerted", "reviewed", "new_package_skipped", "needs_adjudication",
-            "refused_to_extract", "no_sdist", "refused_to_fetch", "pending_review", "scan_failed"}
+            "refused_to_extract", "no_sdist", "refused_to_fetch", "pending_review", "scan_failed",
+            "removed_before_scan"}
 
 
 def _load_ruleset(cfg):
@@ -233,7 +234,7 @@ def _scan_release(cfg, rel, ruleset, backend, first_release=False):
     """Download and scan one release outside the main pipeline (pending, backfill), through the sandbox.
     Returns (Diff, TriageResult), or None when there is no tarball."""
     dl = fetcher.download(cfg, rel)
-    if dl is None:
+    if dl is None or isinstance(dl, fetcher.Removed):
         return None
     if not isinstance(dl, Download):         # a skipped new package: nothing was downloaded, nothing to open
         d = differ.build_diff(dl)
@@ -289,6 +290,9 @@ def _process_fetched(cfg, conn, rvw, ruleset, rel, result, offline=False, guard=
         return True
     if isinstance(result, Exception):
         return _scan_failed(cfg, conn, rid, rel, result)
+    if isinstance(result, fetcher.Removed):     # gone before we got to it: kept on record, nobody asked to act
+        store.record_removed(conn, rid, result.kind, result.at)
+        return True
     if result is None:
         store.update_stage(conn, rid, "no_sdist")
         return True
@@ -730,6 +734,7 @@ def export_dashboard(cfg: Config, out_path=None, generated_at: str = ""):
         cur = store.get_cursor(conn)
         releases_total = store.count_releases(conn)
         pending_review = store.pending_review_counts(conn)
+        removed = store.removed_counts(conn)
     finally:
         conn.close()
     reachable, reviewer_label = _probe_reviewer(cfg)
@@ -741,6 +746,7 @@ def export_dashboard(cfg: Config, out_path=None, generated_at: str = ""):
         "releases_total": releases_total, "verdicts_total": c["model_reviewed"],
         "flagged_total": c["flagged"], "unscanned_total": c["unscanned"],
         "reviewer": reviewer_label, "model_reachable": reachable, "pending_review": pending_review,
+        "removed": removed,
         "guard": guard_status(cfg),
         "watchlist": _watchlist_status(cfg),
     }
