@@ -35,10 +35,10 @@ def _is_js(path: str) -> bool:
 
 def classify_location(path: str) -> float:
     base = posixpath.basename(path)
-    if base in _AUTOEXEC_PATHS or base in {"index.js", "main.js", "cli.js"}:
+    if base in _AUTOEXEC_PATHS:
         return 3.0
-    if base.startswith("bin/") or "/bin/" in path:
-        return 3.0
+    if base in {"index.js", "main.js", "cli.js"} or path.startswith("bin/") or "/bin/" in path:
+        return 2.0          # runs whenever the package is loaded or its command is used, but not at install time
     segs = path.split("/")
     if any(s in {"tests", "test", "docs", "doc", "examples", "example"} for s in segs):
         return 0.2
@@ -152,11 +152,22 @@ def _has_non_literal_arg(node):
     return False
 
 
+# A timer's first argument is evaluated as code only when it is a string; a function or a reference is a callback.
+_CALLBACK_TYPES = {"arrow_function", "function_expression", "function", "identifier", "member_expression"}
+
+
+def _timer_takes_code(node) -> bool:
+    args = _node_field(node, "arguments")
+    first = next((c for c in args.children if c.is_named), None) if args is not None else None
+    return first is not None and first.type not in _CALLBACK_TYPES
+
+
 def _find_categories(tree, added_lines):
     cats = set()
     names = set()
     if tree is None:
         return cats, names
+    uses_child_process = "child_process" in _node_text(tree.root_node)
     for node in _walk_tree(tree.root_node):
         if node.type not in ("call_expression", "member_expression"):
             continue
@@ -175,6 +186,10 @@ def _find_categories(tree, added_lines):
         name, obj = _resolve_call_name(node)
         if name is None:
             continue
+        if name in {"setTimeout", "setInterval"} and not _timer_takes_code(node):
+            continue
+        if name == "exec" and not uses_child_process:
+            continue        # RegExp#exec; a shell exec needs child_process in the file
         if name in _PRIM_EXEC:
             cats.add("exec")
             names.add(name)
