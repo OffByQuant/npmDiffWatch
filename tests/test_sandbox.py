@@ -159,7 +159,7 @@ def test_pipeline_scans_a_download_through_the_sandbox(tmp_path, monkeypatch):
     rel = NewRelease("p", "1.0.1", 5)
     assert orchestrator._process_fetched(cfg, conn, None, orchestrator._load_ruleset(cfg), rel, _download())
     stage, score, has_lock = conn.execute("SELECT stage, triage_score, has_lockfile FROM releases").fetchone()
-    assert stage == "alerted" and score >= cfg.threshold_t and has_lock   # escalated, no reviewer
+    assert stage == "pending_review" and score >= cfg.threshold_t and has_lock   # escalated, no reviewer
 
 
 def test_download_then_extract_matches_fetch_artifacts(monkeypatch):

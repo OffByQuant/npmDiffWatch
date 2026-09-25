@@ -5,7 +5,7 @@ from . import egress, store
 from .config import Config, load_config
 from .orchestrator import (run_once, seed_now, list_pending, adjudicate, get_evidence,
                            backfill_evidence, export_dashboard, watch, review_pending,
-                           pending_review_counts, prune, guard_status, feed_retry_counts)
+                           pending_review_counts, queued_releases, prune, guard_status, feed_retry_counts)
 from .guard import describe
 
 
@@ -87,7 +87,7 @@ def main():
                          help="review releases queued for LLM review (by default: too_large and exhausted "
                               "retries) — e.g. with -c pointing at a larger-context model")
     rpp.add_argument("--reason", action="append",
-                     choices=["too_large", "review_failed", "endpoint_unreachable"],
+                     choices=["too_large", "review_failed", "endpoint_unreachable", "reviewer_disabled"],
                      help="only this queue reason (repeatable)")
     rpp.add_argument("--limit", type=int, default=None, help="review at most N releases")
     adjp = sub.add_parser("adjudicate", help="record your verdict on a queued suspicious release")
@@ -171,6 +171,8 @@ def main():
             print(f"[npmdiffwatch] {sum(queued.values())} release(s) queued for LLM review ("
                   + ", ".join(f"{k}: {v}" for k, v in sorted(queued.items()))
                   + ") — see `review-pending`")
+            for r in queued_releases(cfg):
+                print(f"  {r['package']}=={r['version']}  score={r['triage_score'] or 0:.0f}  waiting: {r['pending_reason']}")
         items = list_pending(cfg)
         if not items:
             print("[npmdiffwatch] no suspicious verdicts awaiting adjudication"); return

@@ -222,8 +222,8 @@ key is missing, that run logs a notice and falls back to heuristic-only — it d
 | `none` | prompt-only; nothing enforces the shape | very small models / last resort |
 
 Regardless of mode, the parsed verdict is **validated client-side** against the review schema. A verdict
-with an out-of-range enum or a missing `classification` is rejected, and the release degrades to a
-heuristic alert — never a silent pass. Non-critical fields that a reasoning model truncates are filled
+with an out-of-range enum or a missing `classification` is rejected, and the release stays in the review
+queue to be retried — never a silent pass. Non-critical fields that a reasoning model truncates are filled
 from defaults so the verdict still lands. Start at `json_schema`; step down only if the logs show
 `ReviewUnavailable: non-JSON content`.
 
@@ -451,7 +451,7 @@ override the config's reviewer with an OpenAI-compatible server; no API key need
 `--interval N` sets the seconds between scans once caught up (default 300); `--out`/`--port` work as above. A failed scan
 (network blip, endpoint down) is logged and the daemon keeps going; Ctrl-C stops cleanly. The dashboard's
 status strip shows whether your model endpoint is reachable and how long ago the last scan ran — start your
-model server (§2) before `watch --serve`, or reviews fall back to heuristics until it's up.
+model server (§2) before `watch --serve`; until it's up, flagged releases wait in the review queue.
 
 It is a **foreground** process — keep the terminal open, or run it under your agent harness, which will run
 it as a background task and hand you back the dashboard URL. For unattended, machine-level scheduling,
@@ -650,7 +650,6 @@ Each alert names how it was reached:
 | alert | meaning |
 |---|---|
 | `malicious` with a `model=` name | the reviewer's verdict; `cited_hunk` is the code it rests on. The model's `suspicious` calls go to `pending` instead |
-| `suspicious-heuristic` with a score | the rules fired and no model reviewed it (heuristic-only mode, §10) |
 | `suspicious-heuristic` with `UNREVIEWED: …` | nothing could be shown to a model: a tarball refused at download or unpack (§5), or flagged content with no reviewable text. Needs manual review |
 
 ---
@@ -663,8 +662,10 @@ To run with no model at all — rules and weights only, no endpoint required —
 reviewer_enabled = false
 ```
 
-Every release crossing `threshold_t` becomes a heuristic alert. Useful for a first pass on a box with no
-GPU and no API budget, or to keep monitoring when your endpoint is down.
+Every release crossing `threshold_t` is queued for review instead of alerted: `pending` lists each one with
+its score. Only a small row is stored per release, so the queue doesn't grow the database. If you enable a
+reviewer later, queued releases are downloaded and scanned again and reviewed, up to
+`max_pending_per_tick` per tick. Useful for a first pass on a box with no GPU and no API budget.
 
 ---
 
@@ -672,7 +673,7 @@ GPU and no API budget, or to keep monitoring when your endpoint is down.
 
 | Symptom | Cause / fix |
 |---|---|
-| `ReviewUnavailable: non-JSON content` in logs | the model isn't honoring the JSON contract. Lower `structured_output` (`json_schema` → `json_object` → `none`) or use a more capable model. The release still alerted heuristically — nothing was dropped. |
+| `ReviewUnavailable: non-JSON content` in logs | the model isn't honoring the JSON contract. Lower `structured_output` (`json_schema` → `json_object` → `none`) or use a more capable model. The release stays in the review queue — nothing was dropped. |
 | Every Anthropic run logs `heuristic-only this run` | `ANTHROPIC_API_KEY` isn't in the environment the *scheduler* uses. Put it in the systemd `EnvironmentFile` / cron wrapper / Actions secret, not just your interactive shell. |
 | `401`/`403` from a hosted endpoint | `api_key_env` names a variable that's unset, empty, or wrong. Check it from the harness's environment: `echo $OPENAI_API_KEY`. |
 | `400`/`ReviewUnavailable: HTTP Error 400` from DeepSeek (or another reasoning model) | the endpoint rejects strict `json_schema` (an OpenAI-only extension). Set `structured_output = "json_object"`. See `examples/deepseek.toml`. |
