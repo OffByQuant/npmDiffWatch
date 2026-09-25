@@ -29,6 +29,7 @@ _backend = "off"      # chosen once per run by choose(); "seatbelt" | "systemd" 
 _PATH_FIELDS = ("db_path", "cache_dir", "lock_path", "rules_dir", "top_npm_path")
 _ROOT = Path(__file__).resolve().parent.parent      # the directory npmdiffwatch is imported from
 _PROBE_OK = {"network": "blocked", "write": "blocked"}
+_PARENT_RULES = {"maintainer", "dep"}     # rule types computed from registry metadata, never the tarball
 
 
 class SandboxError(Exception):
@@ -260,7 +261,14 @@ def analyze(cfg, dl: Download, maintainer_context, backend: str | None = None, r
     flags, d, tr = _decode_output(_run(cfg, backend, _encode_input(cfg, dl, maintainer_context)), cfg, ruleset)
     _check(d.package == dl.package and d.version == dl.version, "diff (wrong release)")
     d.added_dep_findings.extend(dl.added_dep_findings)     # the parent's own findings, not the worker's copy
-    return flags, d, tr
+    # Ownership and dependency rules read registry metadata, not the tarball, so the parent evaluates them
+    # itself: a worker taken over by the package cannot drop them.
+    own = {r.id for r in ruleset if r.applies_to in _PARENT_RULES}
+    meta = engine.triage(Diff(d.package, d.version, d.is_first_release, [], [], list(dl.added_dep_findings)),
+                         cfg, [r for r in ruleset if r.id in own], maintainer_context)
+    fired = [r for r in tr.fired_rules if r.rule not in own] + meta.fired_rules
+    score = sum(r.weight for r in fired)
+    return flags, d, TriageResult(score, fired, score >= cfg.threshold_t)
 
 
 # ---- checking that the sandbox actually holds ----
