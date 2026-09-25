@@ -63,7 +63,9 @@ WHAT TO LOOK FOR (combinations and auto-exec location dominate single primitives
 - decode (Buffer.from, atob, String.fromCharCode) + eval/Function, or a loader reading a high-entropy bundled asset
 - dangerous primitives in a lifecycle script: preinstall, install, postinstall, bin/ entry, main entry -> install-hook-rce
 - prototype pollution via __proto__ or Object.assign on untrusted input -> proto-pollution
-- a newly-added dependency that is a typosquat of a popular package -> typosquat
+- a newly-added dependency named like a popular package -> typosquat, but first check it is not the \
+author's own package (the same scope or name family as this package or its other dependencies). Without the \
+dependency's own code, that is at most "suspicious"
 - dynamic require() with computed argument that could resolve to user-controlled path
 - Binary / .wasm / .node addon files appearing without source -> dropper/obfuscated-loader
 - package.json scripts field adding preinstall/install/postinstall hooks
@@ -85,6 +87,10 @@ Without concrete evidence of one of these in the shown code, the verdict is "ben
 uses powerful primitives (child_process, eval, network, fs writes). Use "suspicious" only when the shown \
 code points at one of these but a needed piece is not shown (for example it fetches and runs a payload \
 whose content you cannot see).
+
+The dependency screening block is DiffWatch's heuristic screening of registry metadata. Names in it are \
+author-chosen. A finding is a lead to check against the shown package.json and code, not evidence on its own. \
+It never means malicious by itself, and a missing finding is not proof of safety.
 
 FIRST-PARTY FLOWS ARE NOT EXFILTRATION. A CLI that logs a user into its own service (browser sign-in, a \
 local callback server), stores the tokens it received in its own config, sends those tokens or ones the \
@@ -137,6 +143,21 @@ def _rank_files(diff, triage):
 
 
 _DESC_HEADING = "--- package description (the author's claim; context, not evidence) ---"
+_DEPS_HEADING = ("--- dependency screening (DiffWatch heuristics on registry metadata; each line is a lead to check, "
+                 "not evidence) ---")
+_DEP_LEAD = {
+    "typosquat": "its name is one or two edits away from the popular package {target}",
+    "nonexistent": "not found on the registry",
+    "brand-new": "first published recently",
+    "not-screened-cap": "not screened (too many new dependencies in this release)",
+}
+
+
+def _render_dep_leads(findings) -> str:
+    lines = [f"  added dependency {_one_line(str(f.get('name', '?')))}: "
+             + _DEP_LEAD[f["reason"]].format(target=_one_line(str(f.get("target", "?"))))
+             for f in findings or [] if isinstance(f, dict) and f.get("reason") in _DEP_LEAD]
+    return _DEPS_HEADING + "\n" + "\n".join(lines) if lines else ""
 _LOC_HEADING = "flagged_locations:"
 
 
@@ -170,9 +191,11 @@ def build_review_input(diff, triage, *, max_chars: int) -> str:
     desc_text = f"{_DESC_HEADING}\n  {desc}" if desc else ""
     # File paths are author-chosen (tar member names), so the flagged locations are fenced too.
     loc_text = f"{_LOC_HEADING} {', '.join(seen)}" if seen else ""
-    body_parts = [p for p in (loc_text, desc_text, pkg_json_text) if p]
-    used, truncated = (len(header) + len(marker) + len(TRUNCATION_NOTE) + len(loc_text) + len(desc_text)
-                       + len(pkg_json_text)), False
+    # Dependency names are author-chosen too, so the screening leads are fenced.
+    deps_text = _render_dep_leads(getattr(diff, "added_dep_findings", []))
+    body_parts = [p for p in (loc_text, deps_text, desc_text, pkg_json_text) if p]
+    used, truncated = (len(header) + len(marker) + len(TRUNCATION_NOTE) + len(loc_text) + len(deps_text)
+                       + len(desc_text) + len(pkg_json_text)), False
     for path in ranked_paths:
         rendered = _render_file(by_path[path])
         if used + len(rendered) + 1 > max_chars:
