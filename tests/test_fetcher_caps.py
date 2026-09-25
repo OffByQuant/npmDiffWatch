@@ -96,5 +96,6 @@ def test_package_json_and_lockfiles_at_the_package_root_are_extracted():
                  ("package/package-lock.json", b"{}"), ("package/npm-shrinkwrap.json", b"{}"),
                  ("package/lib/package.json", b"{}")])
     files, _, has_lock, has_shrink = fetcher.extract_tgz(blob, _cfg())
-    assert set(files) == {"package.json", "package-lock.json", "npm-shrinkwrap.json"}
+    assert {"package.json", "package-lock.json", "npm-shrinkwrap.json"} <= set(files)
+    assert "lib/package.json" in files          # a nested one is kept as an ordinary text file, never the manifest
     assert has_lock and has_shrink

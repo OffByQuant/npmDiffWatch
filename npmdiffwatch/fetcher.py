@@ -65,6 +65,17 @@ def _sha256_of(fileobj) -> str:
     return h.hexdigest()
 
 
+def _is_text(data: bytes) -> bool:
+    """Text by content, not by name: no NUL byte near the start and valid UTF-8."""
+    if b"\x00" in data[:8192]:
+        return False
+    try:
+        data.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    return True
+
+
 def extract_tgz(blob: bytes, cfg: Config):
     files: dict[str, bytes] = {}
     binaries: list[dict] = []
@@ -121,6 +132,12 @@ def extract_tgz(blob: bytes, cfg: Config):
                 binaries.append({"path": rel, "size": m.size, "ext": fext,
                                  "reason": "foreign-language-source", "sha256": _sha256_of(tar.extractfile(m))})
                 foreign += 1
+            elif m.size <= cfg.max_source_file_bytes:
+                # Any other text file (shell or Python scripts, extensionless commands, data files): what an
+                # install hook runs or shipped code reads can carry the payload, whatever its name.
+                data = tar.extractfile(m).read(cfg.max_source_file_bytes + 1)
+                if _is_text(data):
+                    files[rel] = data
 
     return files, binaries, has_lockfile, has_shrinkwrap
 
