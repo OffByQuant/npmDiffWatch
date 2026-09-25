@@ -2,6 +2,7 @@ import json
 import logging
 import secrets
 
+from . import execclass, strings
 from .models import Verdict
 from .backends import ReviewUnavailable, make_backend   # noqa: F401  re-exported: orchestrator imports reviewer.ReviewUnavailable
 
@@ -14,7 +15,6 @@ def _new_marker() -> str:
 
 TRUNCATION_NOTE = "\n[TRUNCATED: lowest-risk hunks omitted to fit the input cap.]"
 
-_FIRST_RELEASE_TOP_FILES = 40
 
 # `default` marks a field as non-critical: validate_verdict fills it when a
 # reasoning model truncates the JSON. `classification` has NO default and is the
@@ -131,17 +131,6 @@ def _render_pkg_json_changes(changes) -> str:
     return "\n".join(parts)
 
 
-def _rank_files(diff, triage):
-    weights = _file_weights(triage)
-    by_path = {fd.path: fd for fd in diff.changed}
-    if diff.is_first_release:
-        ranked_paths = sorted(by_path, key=lambda p: -weights.get(p, 0.0))[:_FIRST_RELEASE_TOP_FILES]
-    else:
-        flagged = [p for p in by_path if weights.get(p, 0.0) > 0.0]
-        ranked_paths = sorted(flagged, key=lambda p: -weights[p]) or sorted(by_path)
-    return ranked_paths, by_path
-
-
 _DESC_HEADING = "--- package description (the author's claim; context, not evidence) ---"
 _DEPS_HEADING = ("--- dependency screening (DiffWatch heuristics on registry metadata; each line is a lead to check, "
                  "not evidence) ---")
@@ -158,7 +147,6 @@ def _render_dep_leads(findings) -> str:
              + _DEP_LEAD[f["reason"]].format(target=_one_line(str(f.get("target", "?"))))
              for f in findings or [] if isinstance(f, dict) and f.get("reason") in _DEP_LEAD]
     return _DEPS_HEADING + "\n" + "\n".join(lines) if lines else ""
-_LOC_HEADING = "flagged_locations:"
 
 
 def _one_line(s: str) -> str:
@@ -166,48 +154,120 @@ def _one_line(s: str) -> str:
     return "".join(c if c.isprintable() else repr(c)[1:-1] for c in s)
 
 
+_READ_FIRST = "read first:"
+_EXEC_HEADING = "--- execution context (when each changed file runs; from package.json and literal imports) ---"
+_PUB_HEADING = "--- publishing (registry facts; context, not evidence) ---"
+_STR_HEADING = "--- strings the added code introduces (where to look, not evidence) ---"
+_NOT_SHOWN_HEADING = "--- not shown (did not fit the input cap) ---"
+_LISTED_HEADING = "--- listed only (documentation, styles, source maps, type declarations) ---"
+_RUNNABLE = ("install", "load", "command", "other", "data")
+_ORDER = {c: i for i, c in enumerate(execclass.CLASSES)}
+_LIST_MAX = 40          # every list of files is capped (the rest are counted) so the facts fit any sane input cap
+
+
+def _p(path) -> str:
+    return _one_line(path)[:200]
+
+
+def _capped(lines: list[str], what: str) -> list[str]:
+    return lines[:_LIST_MAX] + ([f"  ... and {len(lines) - _LIST_MAX} more {what}"] if len(lines) > _LIST_MAX else [])
+
+
+def _cls(diff, path) -> str:
+    return (getattr(diff, "file_classes", {}).get(path) or ["other"])[0]
+
+
+def _added_chars(fd) -> int:
+    return sum(len(ln) for h in fd.hunks for ln in h.added)
+
+
+def _order_files(diff) -> list[str]:
+    return [fd.path for fd in sorted(diff.changed, key=lambda fd: (_ORDER.get(_cls(diff, fd.path), 99),
+                                                                   -_added_chars(fd), fd.path))]
+
+
+def _yn(v) -> str:
+    return "unknown" if v is None else "yes" if v else "no"
+
+
+def _render_publishing(p) -> str:
+    if not p:
+        return ""
+    lines = [f"  provenance: before {_yn(p.get('provenance_before'))}, now {_yn(p.get('provenance_now'))}",
+             f"  trusted publisher: before {_one_line(str(p.get('trusted_publisher_before') or 'none'))}, "
+             f"now {_one_line(str(p.get('trusted_publisher_now') or 'none'))}"]
+    if p.get("days_since_prior") is not None:
+        lines.append(f"  days since the previous release: {p['days_since_prior']}")
+    if p.get("repository"):
+        lines.append(f"  repository: {_one_line(p['repository'])}")
+    return _PUB_HEADING + "\n" + "\n".join(lines)
+
+
+def _render_exec(diff) -> str:
+    fc = getattr(diff, "file_classes", {})
+    lines = _capped([f"  {_p(p)}: {fc[p][0]} — {_one_line(fc[p][1])}" for p in _order_files(diff) if p in fc],
+                    "files")
+    lines += _capped([f"  {_p(p)} is loaded by: {_one_line(x)}"
+                      for p, loads in getattr(diff, "loaders", {}).items() for x in loads], "loader lines")
+    return _EXEC_HEADING + "\n" + "\n".join(lines) if lines else ""
+
+
+def _render_strings(diff) -> str:
+    found = strings.introduced(diff)
+    return (_STR_HEADING + "\n" + "\n".join(f"  {k} {_one_line(v)} ({_one_line(loc)})" for k, v, loc in found)
+            if found else "")
+
+
+def _render_not_shown(diff, unshown, by_path) -> str:
+    if not unshown:
+        return ""
+    lines = _capped([f"  {_p(p)} ({_cls(diff, p)}, {_added_chars(by_path[p])} chars added)" for p in unshown],
+                    "files")
+    return _NOT_SHOWN_HEADING + "\n" + "\n".join(lines)
+
+
 def build_review_input(diff, triage, *, max_chars: int) -> str:
+    """The reviewer's input: facts and every changed file, ordered by when it runs. No rule score, weight or
+    name is included: routing uses them, the model does not see them."""
     marker = _new_marker()
-    ranked_paths, by_path = _rank_files(diff, triage)
-    ranked_set = set(ranked_paths)
-
-    seen: list[str] = []
-    for r in sorted(triage.fired_rules, key=lambda r: -r.weight):
-        loc = f"{_one_line(r.file)}:{r.lines[0]}-{r.lines[1]}"
-        if r.file in ranked_set and loc not in seen:
-            seen.append(loc)
-    pkg_json_text = _render_pkg_json_changes(getattr(diff, "package_json_changes", []))
-    header = (
-        f"package: {diff.package}\nversion: {diff.version}\n"
-        f"is_first_release: {diff.is_first_release}"
-        + (" (FIRST RELEASE - whole-package scan, no prior baseline)" if diff.is_first_release else "")
-        + f"\ntriage_score: {triage.score:.0f}\n"
-        + f"untrusted_content_marker: {marker}\n"
-        + f"\n{marker}\n"
-    )
-
-    # package.json values (description, scripts, dependency names) are author-written: they go inside the markers.
+    order = _order_files(diff)
+    by_path = {fd.path: fd for fd in diff.changed}
+    header = (f"package: {diff.package}\nversion: {diff.version}\n"
+              f"is_first_release: {diff.is_first_release}"
+              + (" (FIRST RELEASE - whole-package scan, no prior baseline)" if diff.is_first_release else "")
+              + f"\nuntrusted_content_marker: {marker}\n\n{marker}\n")
     desc = getattr(diff, "description", "")
-    desc_text = f"{_DESC_HEADING}\n  {desc}" if desc else ""
-    # File paths are author-chosen (tar member names), so the flagged locations are fenced too.
-    loc_text = f"{_LOC_HEADING} {', '.join(seen)}" if seen else ""
-    # Dependency names are author-chosen too, so the screening leads are fenced.
-    deps_text = _render_dep_leads(getattr(diff, "added_dep_findings", []))
-    body_parts = [p for p in (loc_text, deps_text, desc_text, pkg_json_text) if p]
-    used, truncated = (len(header) + len(marker) + len(TRUNCATION_NOTE) + len(loc_text) + len(deps_text)
-                       + len(desc_text) + len(pkg_json_text)), False
-    for path in ranked_paths:
+    listed = getattr(diff, "listed", [])
+    facts = [p for p in (
+        f"{_READ_FIRST} {', '.join(_p(p) for p in order[:_LIST_MAX])}"
+        + (f", ... and {len(order) - _LIST_MAX} more" if len(order) > _LIST_MAX else "") if order else "",
+        _render_exec(diff), _render_publishing(getattr(diff, "publishing", {})), _render_strings(diff),
+        _render_dep_leads(getattr(diff, "added_dep_findings", [])),
+        f"{_DESC_HEADING}\n  {desc}" if desc else "",
+        _render_pkg_json_changes(getattr(diff, "package_json_changes", [])),
+    ) if p]
+    tail = (_LISTED_HEADING + "\n" + "\n".join(_capped(
+        [f"  {_p(x['path'])} (inert, {x['size']} bytes, not shown)" for x in listed], "files"))) if listed else ""
+    used = len(header) + len(marker) + sum(len(p) + 1 for p in facts) + len(tail) + 1
+    shown: list[str] = []
+    for path in order:
         rendered = _render_file(by_path[path])
         if used + len(rendered) + 1 > max_chars:
-            truncated = True
-            break
-        body_parts.append(rendered)
-        used += len(rendered) + 1
+            break                          # stop at the first file that does not fit: order is importance
+        shown.append(rendered); used += len(rendered) + 1
+    not_shown = _render_not_shown(diff, order[len(shown):], by_path)
+    while shown and used + len(not_shown) + 1 > max_chars:     # the not-shown list counts against the cap too
+        used -= len(shown.pop()) + 1
+        not_shown = _render_not_shown(diff, order[len(shown):], by_path)
+    parts = facts + shown + ([tail] if tail else []) + ([not_shown] if not_shown else [])
+    return header + "\n".join(parts) + f"\n{marker}"
 
-    text = header + "\n".join(body_parts) + f"\n{marker}"
-    if truncated or len(ranked_paths) != len([fd for fd in diff.changed]):
-        text += TRUNCATION_NOTE
-    return text
+
+def has_unshown_runnable(review_input: str) -> bool:
+    if _NOT_SHOWN_HEADING not in review_input:
+        return False
+    block = review_input.split(_NOT_SHOWN_HEADING, 1)[1]
+    return any(f"({c}," in block for c in _RUNNABLE)
 
 
 def build_evidence(diff, triage, *, max_chars: int) -> str:
@@ -255,15 +315,10 @@ def refresh_marker(review_input: str) -> str:
 
 
 def _has_reviewable_content(review_input: str) -> bool:
-    """True if the review input carries any package content between the markers: rendered file hunks or
-    package.json changes."""
-    marker = _marker_of(review_input)
-    _, pkg_json, body, _ = review_input.split(marker, 3)
-    if body.lstrip().startswith(_LOC_HEADING):     # where triage looked is not content either
-        body = body.lstrip().split("\n", 1)[1] if "\n" in body.lstrip() else ""
-    if body.lstrip().startswith(_DESC_HEADING):    # the author's claim alone is nothing to review
-        body = body.lstrip().split("\n", 2)[2] if body.lstrip().count("\n") >= 2 else ""
-    return bool(pkg_json.strip() or body.strip())
+    """True if the input shows any package content: a file's hunks or package.json field changes. Facts alone
+    (how files run, publishing, strings) are context, not something to judge."""
+    body = review_input.split(_marker_of(review_input))[2]
+    return "\n--- file: " in "\n" + body or "--- package.json changes ---" in body
 
 
 def _clamp01(x) -> float:
@@ -283,11 +338,12 @@ class Reviewer:
         (default: max_input_chars; the guard passes the endpoint's measured cap)."""
         cap = cap or self.cfg.reviewer.max_input_chars
         text = build_review_input(diff, triage, max_chars=cap)
-        ranked_paths, by_path = _rank_files(diff, triage)
-        if not _has_reviewable_content(text) and ranked_paths:
-            top = len(_render_file(by_path[ranked_paths[0]]))
+        order = _order_files(diff)
+        if not _has_reviewable_content(text) and order:
+            by_path = {fd.path: fd for fd in diff.changed}
+            top = len(_render_file(by_path[order[0]]))
             if top:
-                needed = len(text) + len(TRUNCATION_NOTE) + top + 1
+                needed = len(text) + top + 1
                 raise InputTooLarge(needed, cap, build_review_input(diff, triage, max_chars=needed))
         return text
 
