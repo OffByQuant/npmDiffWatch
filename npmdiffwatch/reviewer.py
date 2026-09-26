@@ -1,5 +1,7 @@
 import json
 import logging
+import posixpath
+import re
 import secrets
 
 from . import execclass, strings
@@ -27,6 +29,8 @@ REVIEW_SCHEMA = {
                       "default": "unknown"},
         "chain_source": {"type": "string", "default": ""},
         "chain_sink": {"type": "string", "default": ""},
+        "chain_source_code": {"type": "string", "default": ""},
+        "chain_sink_code": {"type": "string", "default": ""},
         "classification": {"type": "string", "enum": ["malicious", "suspicious", "benign"]},
         "confidence": {"type": "number", "default": 0.0},
         "attack_type": {"type": "string", "enum": [
@@ -38,7 +42,7 @@ REVIEW_SCHEMA = {
                                "enum": ["report-to-npm", "monitor", "dismiss"], "default": "monitor"},
         "urgent": {"type": "boolean", "default": False},
     },
-    "required": ["runs_when", "chain_source", "chain_sink", "classification", "confidence", "attack_type",
+    "required": ["runs_when", "chain_source", "chain_sink", "chain_source_code", "chain_sink_code", "classification", "confidence", "attack_type",
                  "reasoning", "cited_hunk", "recommended_action", "urgent"],
     "additionalProperties": False,
 }
@@ -106,8 +110,12 @@ STATED PURPOSE IS CONTEXT, NOT EVIDENCE. The package description, name, README, 
 the author's claims. They can neither excuse a concrete malicious chain nor make a release malicious. Calling \
 a send of pre-existing secrets "telemetry" or "analytics" does not make it benign.
 
-OUTPUT: respond ONLY via the enforced structured schema. Fill runs_when, chain_source and chain_sink before \
-classification; leave chain_source and chain_sink empty for a benign verdict."""  # nosemgrep
+QUOTE BOTH ENDS. chain_source_code and chain_sink_code are the code itself, copied exactly from one or two \
+shown lines (without the leading "+ "): not a description. A string, comment or test data that mentions \
+reading or sending secrets is not a source or a sink; quote the code that does it.
+
+OUTPUT: respond ONLY via the enforced structured schema. Fill runs_when, the chain fields and their quotes \
+before classification; leave them empty for a benign verdict."""  # nosemgrep
 
 SHORT_CHECK_CHARS = 16_000      # ~4,000 tokens; a larger change always gets the full review
 
@@ -388,15 +396,80 @@ def _clamp01(x) -> float:
         return 0.0
 
 
-def apply_chain_gate(d: dict) -> dict:
-    """A malicious verdict stands only for a complete chain that runs without the user asking: both ends cited,
-    and code that runs at install or load. Anything less is held as suspicious for a person to confirm."""
+_HEADING = re.compile(r"^--- (.*) ---$")
+_FILE_HEADING = re.compile(r"^file: (.+) \([^()]*\)$")
+_CODE_EXT = (".js", ".mjs", ".cjs", ".jsx", ".ts", ".mts", ".cts", ".tsx")
+_ONLY_TEXT = re.compile(r"""^(?:[\w$.\[\]'"]+\s*[:=]\s*)?(['"`])(?:(?!\1).)*\1[,;)]*$|^(?://|/\*|\*|#)""")
+_MIN_QUOTE = 8
+
+
+def _norm(s: str) -> str:
+    return " ".join(str(s or "").split())
+
+
+def _shown_code(text: str) -> tuple[dict[str, str], dict[str, str]]:
+    """What the model was shown, by file: added and whole-file lines (removed lines are not evidence), and the
+    package.json changes as "package.json". Also the class of each file from the execution context block."""
+    code: dict[str, list[str]] = {}
+    classes: dict[str, str] = {}
+    section, is_exec = None, False
+    for line in text.splitlines():
+        if (h := _HEADING.match(line)):
+            m = _FILE_HEADING.match(h.group(1))
+            section = m.group(1) if m else "package.json" if h.group(1) == "package.json changes" else None
+            is_exec = line == _EXEC_HEADING
+            continue
+        if is_exec and line.startswith("  ") and ": " in line:
+            path, rest = line[2:].split(": ", 1)
+            classes.setdefault(path, rest.split(" ", 1)[0])
+        elif section is not None and not line.startswith("- "):
+            code.setdefault(section, []).append(line[2:] if line[:2] in ("+ ", "  ") else line)
+    return {p: _norm(" ".join(ls)) for p, ls in code.items()}, classes
+
+
+def _token(path: str) -> str:
+    """How other code names a file: its name without extension (the directory's, for an index file)."""
+    stem = posixpath.splitext(posixpath.basename(path))[0]
+    return posixpath.basename(posixpath.dirname(path)) if stem == "index" and "/" in path else stem
+
+
+def _names(code: str, path: str) -> bool:
+    return re.search(rf"(?<![\w$-]){re.escape(_token(path))}(?![\w$-])", code) is not None
+
+
+def _quote_checks(d: dict, text: str) -> list[str]:
+    code, classes = _shown_code(text)
+    where, why = {}, []
+    for end in ("source", "sink"):
+        q = _norm(d.get(f"chain_{end}_code")).strip("`")
+        where[end] = [p for p, t in code.items() if q in t] if len(q.replace(" ", "")) >= _MIN_QUOTE else []
+        if not where[end]:
+            why.append(f"the {end} is not quoted from the shown code")
+        elif all(p.endswith(_CODE_EXT) for p in where[end]) and _ONLY_TEXT.match(q):
+            why.append(f"the quoted {end} is a string or comment, not code")
+        elif all(classes.get(p) == "not-shipped" for p in where[end]):
+            why.append(f"the {end} is in code that is not shipped")
+    if where["source"] and where["sink"] and not any(
+            s == k or _names(code[s], k) or _names(code[k], s) for s in where["source"] for k in where["sink"]):
+        why.append("source and sink are not in the same file or in files that name each other")
+    return why
+
+
+def apply_chain_gate(d: dict, text: str | None = None) -> dict:
+    """A malicious verdict stands only for a complete chain that runs without the user asking: both ends cited
+    and, when the input is given, quoted from the shown code, in one file or files that name each other, in
+    shipped code, and code rather than text about it; code that runs at install or load. Anything less is held
+    as suspicious for a person to confirm."""
     if d.get("classification") != "malicious":
         return d
     why = [w for w, bad in (("no source cited", not str(d.get("chain_source") or "").strip()),
                             ("no sink cited", not str(d.get("chain_sink") or "").strip()),
-                            (f"runs only as {d.get('runs_when')}", d.get("runs_when") in ("command", "not-shipped")))
+                            (f"runs only as {d.get('runs_when')}", d.get("runs_when") in ("command", "not-shipped")),
+                            ("when it runs is unknown", d.get("runs_when") not in ("install", "load", "command",
+                                                                                   "not-shipped")))
            if bad]
+    if text is not None:
+        why += _quote_checks(d, text)
     if not why:
         return d
     return {**d, "classification": "suspicious", "recommended_action": "monitor", "urgent": False,
@@ -466,7 +539,7 @@ class Reviewer:
                                      schema=REVIEW_SCHEMA, max_tokens=self.cfg.reviewer.max_output_tokens,
                                      timeout=timeout)
         d = json.loads(text)
-        d = apply_chain_gate(d)
+        d = apply_chain_gate(d, user_text)
         # recommended_action is informational (a human adjudicates downstream), so validate_verdict
         # already coerced any out-of-enum value to "monitor". But "monitor" on confirmed malware reads
         # wrong in an alert: fail toward caution and always surface report-to-npm for a malicious verdict.
