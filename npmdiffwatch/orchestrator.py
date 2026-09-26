@@ -168,6 +168,33 @@ def _review_routed(cfg, conn, rvw, d, tr, rid, *, offline=False, guard=None) -> 
     return _review_escalated(cfg, conn, rvw, d, tr, rid, guard=guard)
 
 
+def evaluate_release(cfg, dl, ruleset, rvw, backend) -> dict:
+    """The route and review one release gets, without the database (the evaluation harness uses this)."""
+    ctx = {"current": dl.maintainer_metadata, "prior": None}
+    _, d, tr = sandbox.analyze(cfg, dl, ctx, backend, ruleset)
+    if routing.route(d).tier == "fact":
+        return {"tier": "fact"}
+    text = reviewer.short_input(d, tr)
+    if text is not None:
+        try:
+            if rvw.short_check(d.package, d.version, text) == "clear":
+                return {"tier": "short", "verdict": "benign", "input_chars": len(text),
+                        "files_shown": text.count("--- file: ")}
+        except reviewer.ReviewUnavailable:
+            pass
+    try:
+        text = rvw.prepare(d, tr)
+    except reviewer.InputTooLarge:
+        return {"tier": "too-large"}
+    v = rvw.review_text(d.package, d.version, tr.score, tr.fired_rules, text)
+    omitted = (text.split(reviewer._NOT_SHOWN_HEADING, 1)[1].count("\n  ")
+               if reviewer._NOT_SHOWN_HEADING in text else 0)
+    return {"tier": "full", "verdict": v.classification, "cited_hunk": v.cited_hunk, "confidence": v.confidence,
+            "attack_type": v.attack_type, "reasoning": v.reasoning, "input_chars": len(text),
+            "files_shown": text.count("--- file: "), "files_omitted": omitted, "runs_when": v.runs_when,
+            "chain_source": v.chain_source, "chain_sink": v.chain_sink}
+
+
 def _rebuild_review_input(cfg, conn, rvw, row, ruleset, cap):
     """Download and scan a queued release again (through the sandbox) and build its review input. Returns None,
     re-queued with the reason, when it can't be downloaded or doesn't fit."""
