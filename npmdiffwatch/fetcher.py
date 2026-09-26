@@ -129,8 +129,12 @@ def extract_tgz(blob: bytes, cfg: Config):
                 binaries.append({"path": rel, "sha256": hashlib.sha256(data).hexdigest(),
                                  "size": m.size})
             elif (fext := _foreign_ext(m.name)) and foreign < cfg.max_foreign_files:
-                binaries.append({"path": rel, "size": m.size, "ext": fext,
-                                 "reason": "foreign-language-source", "sha256": _sha256_of(tar.extractfile(m))})
+                data = tar.extractfile(m).read() if m.size <= cfg.max_source_file_bytes else None
+                binaries.append({"path": rel, "size": m.size, "ext": fext, "reason": "foreign-language-source",
+                                 "sha256": hashlib.sha256(data).hexdigest() if data is not None
+                                 else _sha256_of(tar.extractfile(m))})
+                if data is not None and _is_text(data):
+                    files[rel] = data       # a script an install hook can run: the model reads it
                 foreign += 1
             elif m.size <= cfg.max_source_file_bytes:
                 # Any other text file (shell or Python scripts, extensionless commands, data files): what an

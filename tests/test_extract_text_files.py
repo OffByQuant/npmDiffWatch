@@ -36,3 +36,11 @@ def test_is_text():
     assert fetcher._is_text(b"plain text\n")
     assert not fetcher._is_text(b"a\x00b")
     assert not fetcher._is_text(b"\xff\xfe\xfd")
+
+
+def test_script_language_text_is_kept_and_still_fingerprinted():
+    files, binaries, *_ = fetcher.extract_tgz(_tgz({"setup.ps1": b"Write-Host hi\n",
+                                                    "tool.exe": b"MZ\x90\x00\x03\x00\x00\x00"}), Config())
+    assert files["setup.ps1"] == b"Write-Host hi\n"
+    assert "tool.exe" not in files
+    assert {b["path"] for b in binaries} == {"setup.ps1", "tool.exe"}
