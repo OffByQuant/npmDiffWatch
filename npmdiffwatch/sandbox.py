@@ -155,7 +155,8 @@ def _decode_output(raw: bytes, cfg, ruleset):
                                     _str(f["new_text"], "file text", optional=True)))
         bins = dd["added_binaries"]
         _check(isinstance(bins, list) and all(isinstance(b, dict) and all(
-            isinstance(k, str) and (v is None or type(v) in (str, int)) for k, v in b.items()) for b in bins),
+            isinstance(k, str) and (v is None or type(v) in (str, int)) for k, v in b.items())
+            and isinstance(b.get("path"), str) for b in bins),
             "binary list")
         pkg = [PkgJsonChange(_str(c["field"], "package.json change"), _str(c["old"], "package.json change", True),
                              _str(c["new"], "package.json change", True)) for c in dd["package_json_changes"]]

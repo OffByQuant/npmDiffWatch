@@ -134,8 +134,8 @@ changes, with facts about how its files run and how it was published. Decide onl
 Answer "review" if the added or changed code could be any part of these chains: reading secrets (tokens, \
 ~/.npmrc, ~/.ssh, ~/.aws, credentials, process.env) and sending anything off the machine; fetching or decoding \
 code and running it; spreading to other packages or projects, or deleting or encrypting user files. Also answer \
-"review" for obfuscated or minified code you cannot read, for anything that runs at install, and whenever you \
-are unsure. Answer "clear" only when the change plainly does none of this. "clear" means only that no full \
+"review" for obfuscated or minified code you cannot read, for anything that runs at install, when code reads a \
+changed file that "cannot be read as text", and whenever you are unsure. Answer "clear" only when the change plainly does none of this. "clear" means only that no full \
 review is needed.
 
 OUTPUT: respond ONLY via the enforced structured schema.""")  # nosemgrep
@@ -399,7 +399,10 @@ def _clamp01(x) -> float:
 _HEADING = re.compile(r"^--- (.*) ---$")
 _FILE_HEADING = re.compile(r"^file: (.+) \([^()]*\)$")
 _CODE_EXT = (".js", ".mjs", ".cjs", ".jsx", ".ts", ".mts", ".cts", ".tsx")
-_ONLY_TEXT = re.compile(r"""^(?:[\w$.\[\]'"]+\s*[:=]\s*)?(['"`])(?:(?!\1).)*\1[,;)]*$|^(?://|/\*|\*|#)""")
+_TEXT_PARTS = re.compile(r"""(['"`])(?:\\.|(?!\1).)*\1|//.*|/\*.*?\*/|^\s*\*.*""")
+_KEY = re.compile(r"[\w$]+\s*:(?!:)")
+_EXEC_LINE = re.compile(r"^  (.+): (install|load|command|other|data|not-shipped|inert) — ")
+_JSON_ESCAPE = re.compile(r'\\(["\\/])')
 _MIN_QUOTE = 8
 
 
@@ -419,12 +422,22 @@ def _shown_code(text: str) -> tuple[dict[str, str], dict[str, str]]:
             section = m.group(1) if m else "package.json" if h.group(1) == "package.json changes" else None
             is_exec = line == _EXEC_HEADING
             continue
-        if is_exec and line.startswith("  ") and ": " in line:
-            path, rest = line[2:].split(": ", 1)
-            classes.setdefault(path, rest.split(" ", 1)[0])
-        elif section is not None and not line.startswith("- "):
-            code.setdefault(section, []).append(line[2:] if line[:2] in ("+ ", "  ") else line)
+        if is_exec:
+            if (m := _EXEC_LINE.match(line)):      # greedy path: a path holding ": <class> — " stays one path
+                classes.setdefault(m.group(1), m.group(2))
+        elif section is not None and not line.startswith("- ") and line != text.rsplit("\n", 1)[-1]:
+            ln = line[2:] if line[:2] in ("+ ", "  ") else line
+            if section.endswith(".json"):       # JSON strings are shown escaped; the model quotes them as read
+                ln += " \n " + _JSON_ESCAPE.sub(r"\1", ln)
+            code.setdefault(section, []).append(ln)
     return {p: _norm(" ".join(ls)) for p, ls in code.items()}, classes
+
+
+def _only_text(q: str) -> bool:
+    """Nothing but string literals, comments and object keys: text that mentions an action, not code doing it."""
+    if "${" in q:
+        return False
+    return not re.search(r"[A-Za-z_$#][\w$]*", _KEY.sub(" ", _TEXT_PARTS.sub(" ", q)))
 
 
 def _token(path: str) -> str:
@@ -434,7 +447,9 @@ def _token(path: str) -> str:
 
 
 def _names(code: str, path: str) -> bool:
-    return re.search(rf"(?<![\w$-]){re.escape(_token(path))}(?![\w$-])", code) is not None
+    """The code names the file, or a directory it sits in (a require of a directory reaches the files in it)."""
+    tokens = {_token(path)} | {d for d in posixpath.dirname(path).split("/") if len(d) > 1}
+    return any(re.search(rf"(?<![\w$-]){re.escape(t)}(?![\w$-])", code) for t in tokens if t)
 
 
 def _quote_checks(d: dict, text: str) -> list[str]:
@@ -445,7 +460,7 @@ def _quote_checks(d: dict, text: str) -> list[str]:
         where[end] = [p for p, t in code.items() if q in t] if len(q.replace(" ", "")) >= _MIN_QUOTE else []
         if not where[end]:
             why.append(f"the {end} is not quoted from the shown code")
-        elif all(p.endswith(_CODE_EXT) for p in where[end]) and _ONLY_TEXT.match(q):
+        elif all(p.endswith(_CODE_EXT) for p in where[end]) and _only_text(q):
             why.append(f"the quoted {end} is a string or comment, not code")
         elif all(classes.get(p) == "not-shipped" for p in where[end]):
             why.append(f"the {end} is in code that is not shipped")
@@ -483,8 +498,9 @@ class Reviewer:
         self.backend = backend if backend is not None else make_backend(cfg)
 
     def prepare(self, diff, triage, cap=None) -> str:
-        """Build the review input, or raise InputTooLarge if the highest-risk file can't fit in `cap`
-        (default: max_input_chars; the guard passes the endpoint's measured cap)."""
+        """Build the review input, or raise InputTooLarge if no changed file fits in `cap` (default:
+        max_input_chars; the guard passes the endpoint's measured cap). Files that do not fit are skipped and
+        listed as not shown; a benign verdict then stays in pending as reviewed_partial."""
         cap = cap or self.cfg.reviewer.max_input_chars
         text = build_review_input(diff, triage, max_chars=cap)
         order = _order_files(diff)
