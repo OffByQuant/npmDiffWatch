@@ -29,13 +29,13 @@ def test_changed_data_file_is_classed_with_its_loader():
     assert "config/data.json" in {f.path for f in d.changed}
 
 
-def test_inert_files_are_listed_not_diffed():
-    big = "x" * 900_000
+def test_changed_inert_files_carry_text_not_hunks_and_huge_ones_are_data():
     d = differ.build_diff(_art({"package.json": _PJ0, "index.js": ""},
-                               {"package.json": _PJ, "index.js": "", "dist/a.js.map": big}))
-    assert "dist/a.js.map" not in {f.path for f in d.changed}
-    assert d.listed == [{"path": "dist/a.js.map", "size": 900_000, "class": "inert"}]
-
+                               {"package.json": _PJ, "index.js": "", "dist/a.js.map": '{"version":3}',
+                                "dist/b.js.map": "x" * 900_000}))
+    a = next(f for f in d.changed if f.path == "dist/a.js.map")
+    assert a.hunks == [] and a.new_text == '{"version":3}' and d.file_classes["dist/a.js.map"][0] == "inert"
+    assert d.file_classes["dist/b.js.map"][0] == "data"
 
 def test_a_data_file_does_not_change_triage():
     base = {"package.json": _PJ0, "index.js": _LOADER, "config/data.json": "{}"}

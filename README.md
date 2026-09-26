@@ -20,8 +20,8 @@ open-source LLM** (no per-token bill), and detection logic is **plain YAML rules
 ## ⚙️ How it works
 
 ```
-new npm releases → diff against the prior version → community rules score the change
-   → anything suspicious goes to a local LLM reviewer → you get alerted
+new npm releases → diff against the prior version → nothing that can run changed? cleared
+   → otherwise a short check or the full review by a local LLM reviewer → you get alerted
 ```
 
 State lives in a local SQLite database; nothing is hosted, and nothing leaves your machine except the
@@ -40,6 +40,13 @@ and credential variables the added code introduces, and dependency leads. No rul
 the model. A **malicious** verdict needs a complete chain in the added code with both ends cited (a secret
 read and then sent, a payload decoded and then run); anything less, or code that runs only as a command, is
 held for a person. A benign verdict on a release whose runnable files did not all fit stays in `pending`.
+
+Rules no longer decide what the model reviews. A release is cleared without the model only when nothing that
+can run changed, judged by each file's content rather than its name (a file named like documentation that holds
+code counts as code). Every other release gets a short check, which answers only "clear" or "review" for a
+change that fits whole, or the full review. When the model falls behind, releases wait as "not reviewed yet" in
+`pending`, install-time and load-time changes first; nothing is cleared to catch up. The rule score only orders
+that queue.
 
 ---
 

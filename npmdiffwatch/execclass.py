@@ -4,13 +4,15 @@ import json
 import posixpath
 import re
 
+from .content import DOC_EXT as _DOC_EXT, DOC_NAMES as _DOC_NAMES
+
 CLASSES = ("install", "load", "command", "other", "data", "not-shipped", "inert")
 
 _CODE_EXT = (".js", ".mjs", ".cjs", ".jsx", ".ts", ".mts", ".cts", ".tsx")
 _TYPES_EXT = (".d.ts", ".d.mts", ".d.cts")
 _SCRIPT_EXT = (".sh", ".bash", ".zsh", ".py")
-_INERT_EXT = (".map", ".md", ".markdown", ".css", ".scss", ".less", ".svg", ".html", ".htm") + _TYPES_EXT
-_INERT_NAMES = {"readme", "license", "licence", "changelog", "history", "authors", "notice", "contributing"}
+_INERT_EXT = _DOC_EXT
+_INERT_NAMES = _DOC_NAMES
 _NOT_SHIPPED = {"test", "tests", "__tests__", "spec", "specs", "example", "examples", "doc", "docs",
                 "benchmark", "benchmarks", "fixtures", "__mocks__"}
 _INSTALL_HOOKS = ("preinstall", "install", "postinstall")
@@ -116,6 +118,30 @@ def _roots(pj, files):
         bin_ = {"": bin_}
     cmd = [r for v in (bin_.values() if isinstance(bin_, dict) else []) if (r := _resolve(str(v), files))]
     yield "command", "runs when the user types its command (bin)", cmd
+
+
+def hook_files(files: dict, hooks) -> dict[str, str]:
+    """Files the given install hooks run directly, with the hook that runs each."""
+    scripts = _manifest(files).get("scripts")
+    scripts = scripts if isinstance(scripts, dict) else {}
+    out: dict[str, str] = {}
+    for hook in _INSTALL_HOOKS:
+        if hook in hooks:
+            for p in _command_files(scripts.get(hook), files):
+                out.setdefault(p, hook)
+    return out
+
+
+def entry_files(new_files: dict, prior_files: dict) -> dict[str, tuple[str, str]]:
+    """Files that are an entry point (install, main/exports, bin) in this version but were not in the prior one,
+    with their class and why: moving an entry point onto a file makes that file run, even if it did not change."""
+    before = {p for _, _, roots in _roots(_manifest(prior_files), prior_files) for p in roots}
+    out: dict[str, tuple[str, str]] = {}
+    for cls, why, roots in _roots(_manifest(new_files), new_files):
+        for p in roots:
+            if p not in before:
+                out.setdefault(p, (cls, why))
+    return out
 
 
 def _loaders(files, shipped, targets) -> dict[str, list[str]]:

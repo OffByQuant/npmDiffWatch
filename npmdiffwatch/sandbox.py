@@ -20,7 +20,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from . import differ, engine, execclass, facts, fetcher, rules
+from . import content, differ, engine, execclass, facts, fetcher, rules
 from .config import Config
 from .models import Diff, Download, FileDiff, FiredRule, Hunk, PkgJsonChange, TriageResult
 from .rules import Rule
@@ -146,7 +146,9 @@ def _decode_output(raw: bytes, cfg, ruleset):
         changed = []
         for f in dd["changed"]:
             _dict(f, "file diff")
-            _check(f["change_kind"] in ("added", "removed", "modified"), "change kind")
+            _check(f["change_kind"] in ("added", "removed", "modified", "unchanged"), "change kind")
+            _check(f["change_kind"] != "unchanged" or not f["hunks"], "change kind")
+            _check(f["change_kind"] != "removed" or f["new_text"] is None, "change kind")
             hunks = [Hunk(_pair(h["old_range"], "hunk range"), _pair(h["new_range"], "hunk range"),
                           _strs(h["added"], "hunk"), _strs(h["removed"], "hunk")) for h in f["hunks"]]
             changed.append(FileDiff(_str(f["path"], "path"), f["change_kind"], hunks,
@@ -298,6 +300,14 @@ def _run(cfg, backend: str, payload: bytes) -> bytes:
     return proc.stdout
 
 
+def _check_doc_names(d: Diff):
+    """In the parent, on the validated diff: a file named like documentation whose content isn't is data."""
+    for fd in d.changed:
+        c = d.file_classes.get(fd.path)
+        if c and c[0] == "inert" and fd.new_text is not None and not content.matches_name(fd.path, fd.new_text):
+            d.file_classes[fd.path] = ["data", "named like documentation, but its content is not"]
+
+
 def _publishing(dl: Download, maintainer_context) -> dict:
     """Publishing facts, computed here in the parent from registry metadata; the worker never supplies them."""
     meta = dl.maintainer_metadata or {}
@@ -323,6 +333,7 @@ def analyze(cfg, dl: Download, maintainer_context, backend: str | None = None, r
                                       cfg, ruleset)
         _check(d.package == dl.package and d.version == dl.version, "diff (wrong release)")
         d.added_dep_findings.extend(dl.added_dep_findings)     # the parent's own findings, not the worker's copy
+    _check_doc_names(d)
     object.__setattr__(d, "publishing", _publishing(dl, maintainer_context))
     return flags, d, _with_registry_rules(cfg, dl, d, tr, maintainer_context, ruleset)
 

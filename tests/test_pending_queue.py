@@ -145,7 +145,7 @@ def test_unreachable_model_does_not_pin_the_cursor(tmp_path, monkeypatch):
     orchestrator.run_once(cfg, seed_if_fresh=False)
     conn = store.connect(cfg)
     assert store.get_last_serial(conn) == 5100
-    assert _pending(conn)["pkg"]["pending_reason"] == "endpoint_unreachable"
+    assert _pending(conn)["pkg"]["pending_reason"] == "not_reviewed_yet"     # the backlog, re-scanned when drained
 
 
 def test_review_pending_command_drains_oversized_with_bigger_model(tmp_path, monkeypatch):

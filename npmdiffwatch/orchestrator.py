@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 
-from . import ingest, fetcher, differ, engine, rules, notifier, store, reviewer, egress, dashboard, sandbox
+from . import ingest, fetcher, differ, engine, rules, notifier, store, reviewer, egress, dashboard, sandbox, routing
 from . import guard as guard_mod
 from . import watchlist as watchlist_mod
 from .config import Config
@@ -17,7 +17,7 @@ from .models import Verdict, NewRelease, FiredRule, Download
 
 logger = logging.getLogger(__name__)
 
-TERMINAL = {"triaged", "alerted", "reviewed", "new_package_skipped", "needs_adjudication",
+TERMINAL = {"triaged", "alerted", "reviewed", "cleared_by_fact", "new_package_skipped", "needs_adjudication",
             "refused_to_extract", "no_sdist", "refused_to_fetch", "pending_review", "scan_failed",
             "removed_before_scan", "reviewed_partial"}
 
@@ -117,17 +117,83 @@ def _review_escalated(cfg, conn, rvw, d, tr, rid, *, offline=False, guard=None):
         # No review input is kept: a heuristic-only setup never drains this queue, so it would only grow the
         # database. If a reviewer is enabled later, the release is downloaded and scanned again.
         store.park_for_review(conn, rid, "reviewer_disabled", "the reviewer is disabled in the config", "")
-        return
+        return True
     try:
         text = rvw.prepare(d, tr, cap=guard.input_cap_chars() if guard is not None else None)
     except reviewer.InputTooLarge as e:
         detail = f"{e}; {guard.cap_explain()}" if guard is not None else str(e)
         store.park_for_review(conn, rid, "too_large", detail, e.text)
-    else:
-        if offline:
-            store.park_for_review(conn, rid, "endpoint_unreachable", "reviewer endpoint unreachable", text)
-        else:
-            _attempt_review(cfg, conn, rvw, rid, d.package, d.version, tr.score, tr.fired_rules, text, guard)
+        return True
+    if offline:
+        store.park_for_review(conn, rid, "endpoint_unreachable", "reviewer endpoint unreachable", text)
+        return False
+    return _attempt_review(cfg, conn, rvw, rid, d.package, d.version, tr.score, tr.fired_rules, text, guard)
+
+
+def _review_routed(cfg, conn, rvw, d, tr, rid, *, offline=False, guard=None, registry_changes=()) -> bool:
+    """Every scanned release is routed: cleared by fact when nothing that can run changed, otherwise a short
+    check or the full review. When the model can't take it now it waits, with no stored input, as
+    "not reviewed yet"; nothing is cleared to catch up. Returns False when no more reviews should be sent now."""
+    r = routing.route(d, registry_changes)
+    store.set_priority(conn, rid, r.priority)
+    if r.tier == "fact":
+        store.update_stage(conn, rid, "cleared_by_fact")
+        return True
+    if rvw is None:
+        store.park_for_review(conn, rid, "reviewer_disabled", "the reviewer is disabled in the config", "")
+        return True
+    busy = "reviewer endpoint unreachable" if offline else (guard.admit() if guard is not None else None)
+    if busy:
+        store.park_for_review(conn, rid, "not_reviewed_yet", busy, "")
+        return False
+    text = reviewer.short_input(d, tr)
+    if text is not None:
+        try:
+            with _review_slot(cfg):
+                decision = rvw.short_check(d.package, d.version, text)
+        except reviewer.ReviewUnavailable as e:
+            if _endpoint_down(e) or _is_timeout(e):     # the model is down or hung: wait, don't try again now
+                if guard is not None and _is_timeout(e):
+                    guard.record_timeout()
+                store.park_for_review(conn, rid, "not_reviewed_yet", str(e), "")
+                return False
+            decision = "review"          # a bad short answer is never a clearance
+        if decision == "clear":
+            _record(cfg, conn, rid, Verdict(d.package, d.version, "benign", tr.score, tr.fired_rules, False,
+                                            confidence=None, attack_type="none", cited_hunk="",
+                                            reasoning="Short check: nothing in the change needs a full review.",
+                                            recommended_action="dismiss", model=rvw.backend.primary_model,
+                                            review_tier="short"), tr.score)
+            return True
+    return _review_escalated(cfg, conn, rvw, d, tr, rid, guard=guard)
+
+
+def evaluate_release(cfg, dl, ruleset, rvw, backend) -> dict:
+    """The route and review one release gets, without the database (the evaluation harness uses this)."""
+    ctx = {"current": dl.maintainer_metadata, "prior": None}
+    _, d, tr = sandbox.analyze(cfg, dl, ctx, backend, ruleset)
+    reg = sandbox._manifest_diff(dl).package_json_changes if dl.manifest is not None else ()
+    if routing.route(d, reg).tier == "fact":
+        return {"tier": "fact"}
+    text = reviewer.short_input(d, tr)
+    if text is not None:
+        try:
+            if rvw.short_check(d.package, d.version, text) == "clear":
+                return {"tier": "short", "verdict": "benign", "input_chars": len(text),
+                        "files_shown": text.count("--- file: ")}
+        except reviewer.ReviewUnavailable:
+            pass
+    try:
+        text = rvw.prepare(d, tr)
+    except reviewer.InputTooLarge:
+        return {"tier": "too-large"}
+    v = rvw.review_text(d.package, d.version, tr.score, tr.fired_rules, text)
+    omitted = (text.split(reviewer._NOT_SHOWN_HEADING, 1)[1].count("\n  ")
+               if reviewer._NOT_SHOWN_HEADING in text else 0)
+    return {"tier": "full", "verdict": v.classification, "cited_hunk": v.cited_hunk, "confidence": v.confidence,
+            "attack_type": v.attack_type, "reasoning": v.reasoning, "input_chars": len(text),
+            "files_shown": text.count("--- file: "), "files_omitted": omitted, "runs_when": v.runs_when,
+            "chain_source": v.chain_source, "chain_sink": v.chain_sink}
 
 
 def _rebuild_review_input(cfg, conn, rvw, row, ruleset, cap):
@@ -157,15 +223,15 @@ def drain_pending(cfg, conn, rvw, *, auto: bool, reasons=None, limit=None, guard
     releases and exhausted retries — run it with a larger-context model config. Inputs over this endpoint's cap are skipped
     (auto: re-parked as too_large). `limit` caps attempts, not successes. Returns the number reviewed."""
     if auto:
-        reasons = ("model_busy", "endpoint_unreachable", "review_failed", "reviewer_disabled")
+        reasons = ("model_busy", "endpoint_unreachable", "review_failed", "reviewer_disabled", "not_reviewed_yet")
     elif not reasons:
         reasons = ("too_large", "review_failed")
     cap = guard.input_cap_chars() if guard is not None else cfg.reviewer.max_input_chars
     rows = store.pending_reviews(conn, reasons)
     if auto:      # oversized for an earlier cap (cold start, a smaller max_input_chars) but fits this one
         rows += store.pending_reviews(conn, ("too_large",), max_chars=cap)
-    rows = sorted(rows,
-                  key=lambda r: (r["pending_reason"] != "model_busy", r["release_id"]))
+    rows = sorted(rows, key=lambda r: (r["pending_reason"] != "model_busy", -r["priority"],
+                                       -(r["triage_score"] or 0), r["release_id"]))
     done = tried = 0
     ruleset = None
     for row in rows:
@@ -173,6 +239,24 @@ def drain_pending(cfg, conn, rvw, *, auto: bool, reasons=None, limit=None, guard
             break
         if auto and row["pending_reason"] == "review_failed" and \
                 row["review_attempts"] >= cfg.reviewer.max_review_attempts:
+            continue
+        if row["pending_reason"] == "not_reviewed_yet":
+            ruleset = ruleset if ruleset is not None else _load_ruleset(cfg)
+            try:
+                scanned = _scan_release(cfg, NewRelease(row["package"], row["version"], row["serial"]), ruleset,
+                                        sandbox._backend)
+                why = "no tarball on npm"
+            except Exception as e:           # one bad release never stops the drain (or the feed after it)
+                scanned, why = None, f"{type(e).__name__}: {e}"
+            if scanned is None:
+                store.bump_review_attempts(conn, row["release_id"])
+                store.park_for_review(conn, row["release_id"], "review_failed",
+                                      f"could not download it again to review ({why})", "")
+                continue
+            tried += 1
+            if not _review_routed(cfg, conn, rvw, *scanned, row["release_id"], guard=guard):
+                break
+            done += store.get_stage(conn, row["package"], row["version"]) != "pending_review"
             continue
         text = store.review_input(row)
         rid = row["release_id"]
@@ -324,15 +408,18 @@ def _process_fetched(cfg, conn, rvw, ruleset, rel, result, offline=False, guard=
             flags = {"has_lockfile": result.has_lockfile, "has_shrinkwrap": result.has_shrinkwrap}
             d = differ.build_diff(result)
             tr = engine.triage(d, cfg, ruleset, context)
+            sandbox._check_doc_names(d)             # the same parent-side facts the sandboxed path gets
+            object.__setattr__(d, "publishing", sandbox._publishing(result, context))
         store.update_npm_metadata(conn, rid, **flags)
         store.update_stage(conn, rid, "diffed")
         store.update_stage(conn, rid, "triaged", tr.score,
                            json.dumps([r.__dict__ for r in tr.fired_rules]))
         ev = reviewer.build_evidence(d, tr, max_chars=cfg.evidence_max_chars) if tr.escalate else None
-        if ev:      # below the review threshold nobody acts on the release, so its code isn't kept
+        if ev:      # kept only where rules fired strongly: the database must not grow with every routed release
             store.update_evidence(conn, rid, ev)
-        if tr.escalate:
-            _review_escalated(cfg, conn, rvw, d, tr, rid, offline=offline, guard=guard)
+        reg = (sandbox._manifest_diff(result).package_json_changes
+               if isinstance(result, Download) and result.manifest is not None else ())
+        _review_routed(cfg, conn, rvw, d, tr, rid, offline=offline, guard=guard, registry_changes=reg)
         return True
     except Exception as e:
         logger.exception("processing failed for %s==%s", rel.package, rel.version)
