@@ -138,6 +138,11 @@ def build_diff(a: ArtifactSet) -> Diff:
             new_text = new.decode("utf-8", errors="replace") if new is not None else None
             changed.append(FileDiff(path, kind, hunks, new_text))
 
+    for path, hook in execclass.hook_files(a.new_files, changed_scripts_set).items():
+        if path not in {f.path for f in changed}:
+            # The hook is new or changed, so what it runs is new behaviour even if the file itself is not.
+            changed.append(FileDiff(path, "unchanged", [], a.new_files[path].decode("utf-8", errors="replace")))
+            file_classes[path] = ["install", f"unchanged; the changed {hook} script runs it"]
     changed_paths = {f.path for f in changed}
     diff = Diff(a.package, a.version, a.prior_version is None, changed,
                 list(a.added_binaries), list(a.added_dep_findings), pkg_changes, _description(a.new_files),

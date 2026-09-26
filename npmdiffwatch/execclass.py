@@ -120,6 +120,18 @@ def _roots(pj, files):
     yield "command", "runs when the user types its command (bin)", cmd
 
 
+def hook_files(files: dict, hooks) -> dict[str, str]:
+    """Files the given install hooks run directly, with the hook that runs each."""
+    scripts = _manifest(files).get("scripts")
+    scripts = scripts if isinstance(scripts, dict) else {}
+    out: dict[str, str] = {}
+    for hook in _INSTALL_HOOKS:
+        if hook in hooks:
+            for p in _command_files(scripts.get(hook), files):
+                out.setdefault(p, hook)
+    return out
+
+
 def _loaders(files, shipped, targets) -> dict[str, list[str]]:
     found: dict[str, list[str]] = {}
     for f in shipped:

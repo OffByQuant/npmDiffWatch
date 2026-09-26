@@ -63,7 +63,8 @@ when the package is imported, then commands, then other code, then data files. T
 says when each file runs and why; "X is loaded by: <line>" shows an unchanged line that reads a changed data \
 file, so the data can be code. Publishing, strings and dependency blocks are facts to check against the code: \
 none is evidence on its own, and a missing fact is not proof of safety. "not shown" lists files that did not \
-fit; you cannot see them.
+fit; you cannot see them. A file marked "unchanged" is shown because an install script this release adds \
+or changes now runs it: running it at install is the new behaviour.
 
 WHAT MALICIOUS MEANS. Malicious is a complete chain in code this release adds, never a partial one. Both \
 ends must be in the shown code and you must cite both (chain_source and chain_sink):
@@ -114,6 +115,9 @@ def _file_weights(triage) -> dict:
 
 
 def _render_file(fd) -> str:
+    if fd.change_kind == "unchanged":
+        return "\n".join([f"--- file: {fd.path} (unchanged; a changed install script runs it) ---"]
+                         + [f"  {ln}" for ln in (fd.new_text or "").splitlines()])
     lines = [f"--- file: {fd.path} ({fd.change_kind}) ---"]
     for h in fd.hunks:
         for ln in h.removed:
