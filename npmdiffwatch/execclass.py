@@ -4,13 +4,15 @@ import json
 import posixpath
 import re
 
+from .content import DOC_EXT as _DOC_EXT, DOC_NAMES as _DOC_NAMES
+
 CLASSES = ("install", "load", "command", "other", "data", "not-shipped", "inert")
 
 _CODE_EXT = (".js", ".mjs", ".cjs", ".jsx", ".ts", ".mts", ".cts", ".tsx")
 _TYPES_EXT = (".d.ts", ".d.mts", ".d.cts")
 _SCRIPT_EXT = (".sh", ".bash", ".zsh", ".py")
-_INERT_EXT = (".map", ".md", ".markdown", ".css", ".scss", ".less", ".svg", ".html", ".htm") + _TYPES_EXT
-_INERT_NAMES = {"readme", "license", "licence", "changelog", "history", "authors", "notice", "contributing"}
+_INERT_EXT = _DOC_EXT
+_INERT_NAMES = _DOC_NAMES
 _NOT_SHIPPED = {"test", "tests", "__tests__", "spec", "specs", "example", "examples", "doc", "docs",
                 "benchmark", "benchmarks", "fixtures", "__mocks__"}
 _INSTALL_HOOKS = ("preinstall", "install", "postinstall")

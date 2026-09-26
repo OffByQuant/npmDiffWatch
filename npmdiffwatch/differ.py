@@ -103,8 +103,8 @@ def build_diff(a: ArtifactSet) -> Diff:
         cls, why = classes.get(path) or (prior_classes[path] if prior_classes.get(path, ("",))[0] == "inert"
                                          else ("not-shipped", "removed in this version"))
         file_classes[path] = [cls, why]
-        if cls == "inert":
-            listed.append({"path": path, "size": len(new or b""), "class": "inert"})
+        if cls == "inert" and new is None:      # a removed doc cannot run: listed, never diffed
+            listed.append({"path": path, "size": 0, "class": "inert"})
             continue
         nl, pl = _lines(new or b""), _lines(prior or b"")
 
