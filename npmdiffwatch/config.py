@@ -52,7 +52,7 @@ class Config:
     max_releases_per_run: int = 200
     fetch_concurrency: int = 4
     new_package_policy: str = "surface"
-    threshold_t: float = 40.0
+    threshold_t: float = 40.0     # rules no longer decide what the model reviews: this only orders the queue
     npm_registry: str = "https://registry.npmjs.org"
     npm_replicate: str = "https://replicate.npmjs.com/registry"
     webhook_url: str | None = None

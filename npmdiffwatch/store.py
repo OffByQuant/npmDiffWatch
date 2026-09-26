@@ -44,11 +44,11 @@ def init_schema(conn): conn.executescript(SCHEMA); conn.commit(); migrate_schema
 def migrate_schema(conn):
     for col in ("maintainer_metadata", "evidence", "packument_json", "scripts_json", "has_lockfile", "has_shrinkwrap",
                 "review_attempts", "pending_reason", "pending_detail", "review_input", "review_input_chars",
-                "scan_attempts", "removed_reason", "removed_at"):
+                "scan_attempts", "removed_reason", "removed_at", "priority"):
         try:
             conn.execute(f"SELECT {col} FROM releases LIMIT 1")
         except sqlite3.OperationalError:
-            if col in ("has_lockfile", "has_shrinkwrap", "review_attempts", "scan_attempts"):
+            if col in ("has_lockfile", "has_shrinkwrap", "review_attempts", "scan_attempts", "priority"):
                 conn.execute(f"ALTER TABLE releases ADD COLUMN {col} INTEGER DEFAULT 0")
             elif col == "review_input_chars":
                 conn.execute(f"ALTER TABLE releases ADD COLUMN {col} INTEGER")
@@ -207,6 +207,10 @@ def park_for_review(conn, release_id, reason, detail, review_input):
                  (reason, detail, zlib.compress(review_input.encode()), len(review_input), release_id))
     conn.commit()
 
+def set_priority(conn, release_id, priority: int):
+    conn.execute("UPDATE releases SET priority=? WHERE id=?", (priority, release_id))
+    conn.commit()
+
 def clear_pending(conn, release_id):
     conn.execute("UPDATE releases SET pending_reason=NULL, pending_detail=NULL, review_input=NULL, "
                  "review_input_chars=NULL WHERE id=?",
@@ -215,6 +219,7 @@ def clear_pending(conn, release_id):
 
 def pending_reviews(conn, reasons=None, max_chars=None):
     sql = ("SELECT id AS release_id, package, version, serial, triage_score, triage_rules, pending_reason, "
+           "COALESCE(priority,0) AS priority, "
            "pending_detail, COALESCE(review_attempts,0) AS review_attempts, review_input "
            "FROM releases WHERE stage='pending_review'")
     params = list(reasons or [])
