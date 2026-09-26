@@ -300,17 +300,20 @@ def build_review_input(diff, triage, *, max_chars: int) -> str:
     tail = (_LISTED_HEADING + "\n" + "\n".join(_capped(
         [f"  {_p(x['path'])} (inert, {x['size']} bytes, not shown)" for x in listed], "files"))) if listed else ""
     used = len(header) + len(marker) + sum(len(p) + 1 for p in facts) + len(tail) + 1
-    shown: list[str] = []
+    shown: dict[str, str] = {}
     for path in order:
         rendered = _render_file(by_path[path])
         if used + len(rendered) + 1 > max_chars:
-            break                          # stop at the first file that does not fit: order is importance
-        shown.append(rendered); used += len(rendered) + 1
-    not_shown = _render_not_shown(diff, order[len(shown):], by_path)
+            continue                       # skip a file that does not fit; smaller ones after it still can
+        shown[path] = rendered; used += len(rendered) + 1
+
+    def unshown() -> str:
+        return _render_not_shown(diff, [p for p in order if p not in shown], by_path)
+    not_shown = unshown()
     while shown and used + len(not_shown) + 1 > max_chars:     # the not-shown list counts against the cap too
-        used -= len(shown.pop()) + 1
-        not_shown = _render_not_shown(diff, order[len(shown):], by_path)
-    parts = facts + shown + ([tail] if tail else []) + ([not_shown] if not_shown else [])
+        used -= len(shown.pop(next(reversed(shown)))) + 1
+        not_shown = unshown()
+    parts = facts + list(shown.values()) + ([tail] if tail else []) + ([not_shown] if not_shown else [])
     return header + "\n".join(parts) + f"\n{marker}"
 
 
