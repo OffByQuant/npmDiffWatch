@@ -132,6 +132,18 @@ def hook_files(files: dict, hooks) -> dict[str, str]:
     return out
 
 
+def entry_files(new_files: dict, prior_files: dict) -> dict[str, tuple[str, str]]:
+    """Files that are an entry point (install, main/exports, bin) in this version but were not in the prior one,
+    with their class and why: moving an entry point onto a file makes that file run, even if it did not change."""
+    before = {p for _, _, roots in _roots(_manifest(prior_files), prior_files) for p in roots}
+    out: dict[str, tuple[str, str]] = {}
+    for cls, why, roots in _roots(_manifest(new_files), new_files):
+        for p in roots:
+            if p not in before:
+                out.setdefault(p, (cls, why))
+    return out
+
+
 def _loaders(files, shipped, targets) -> dict[str, list[str]]:
     found: dict[str, list[str]] = {}
     for f in shipped:

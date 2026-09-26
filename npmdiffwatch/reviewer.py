@@ -65,8 +65,8 @@ when the package is imported, then commands, then other code, then data files. T
 says when each file runs and why; "X is loaded by: <line>" shows an unchanged line that reads a changed data \
 file, so the data can be code. Publishing, strings and dependency blocks are facts to check against the code: \
 none is evidence on its own, and a missing fact is not proof of safety. "not shown" lists files that did not \
-fit; you cannot see them. A file marked "unchanged" is shown because an install script this release adds \
-or changes now runs it: running it at install is the new behaviour.
+fit; you cannot see them. A file marked "unchanged" is shown because an install script or entry point this \
+release adds or changes now runs it: that it now runs is the new behaviour.
 
 WHAT MALICIOUS MEANS. Malicious is a complete chain in code this release adds, never a partial one. Both \
 ends must be in the shown code and you must cite both (chain_source and chain_sink):
@@ -140,9 +140,10 @@ def _file_weights(triage) -> dict:
 
 
 def _render_file(fd) -> str:
-    if fd.change_kind == "unchanged":
-        return "\n".join([f"--- file: {fd.path} (unchanged; a changed install script runs it) ---"]
-                         + [f"  {ln}" for ln in (fd.new_text or "").splitlines()])
+    if fd.change_kind == "unchanged" or (not fd.hunks and fd.new_text is not None):
+        what = ("unchanged; a changed install script or entry point now runs it" if fd.change_kind == "unchanged"
+                else f"{fd.change_kind}; whole file")
+        return "\n".join([f"--- file: {fd.path} ({what}) ---"] + [f"  {ln}" for ln in fd.new_text.splitlines()])
     lines = [f"--- file: {fd.path} ({fd.change_kind}) ---"]
     for h in fd.hunks:
         for ln in h.removed:
@@ -208,12 +209,15 @@ def _cls(diff, path) -> str:
 
 
 def _added_chars(fd) -> int:
-    return sum(len(ln) for h in fd.hunks for ln in h.added)
+    return sum(len(ln) for h in fd.hunks for ln in h.added) if fd.hunks else len(fd.new_text or "")
 
 
 def _order_files(diff) -> list[str]:
+    """Changed files the model reads, by when they run. Documentation whose content matches its name is only
+    listed (the parent relabels any that don't as data)."""
     return [fd.path for fd in sorted(diff.changed, key=lambda fd: (_ORDER.get(_cls(diff, fd.path), 99),
-                                                                   -_added_chars(fd), fd.path))]
+                                                                   -_added_chars(fd), fd.path))
+            if _cls(diff, fd.path) != "inert"]
 
 
 def _yn(v) -> str:
@@ -272,7 +276,8 @@ def build_review_input(diff, triage, *, max_chars: int) -> str:
               + (" (FIRST RELEASE - whole-package scan, no prior baseline)" if diff.is_first_release else "")
               + f"\nuntrusted_content_marker: {marker}\n\n{marker}\n")
     desc = getattr(diff, "description", "")
-    listed = getattr(diff, "listed", [])
+    listed = list(getattr(diff, "listed", [])) + [{"path": fd.path, "size": len(fd.new_text or ""), "class": "inert"}
+                                                  for fd in diff.changed if _cls(diff, fd.path) == "inert"]
     facts = [p for p in (
         f"{_READ_FIRST} {', '.join(_p(p) for p in order[:_LIST_MAX])}"
         + (f", ... and {len(order) - _LIST_MAX} more" if len(order) > _LIST_MAX else "") if order else "",
@@ -359,7 +364,7 @@ def _has_reviewable_content(review_input: str) -> bool:
 def short_input(diff, triage) -> str | None:
     """The short check's input, or None when the change does not fit whole (it then gets the full review)."""
     text = build_review_input(diff, triage, max_chars=SHORT_CHECK_CHARS)
-    return None if _NOT_SHOWN_HEADING in text or not _has_reviewable_content(text) else text
+    return None if has_unshown_runnable(text) or not _has_reviewable_content(text) else text
 
 
 def _clamp01(x) -> float:

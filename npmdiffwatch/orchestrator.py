@@ -130,11 +130,11 @@ def _review_escalated(cfg, conn, rvw, d, tr, rid, *, offline=False, guard=None):
     return _attempt_review(cfg, conn, rvw, rid, d.package, d.version, tr.score, tr.fired_rules, text, guard)
 
 
-def _review_routed(cfg, conn, rvw, d, tr, rid, *, offline=False, guard=None) -> bool:
+def _review_routed(cfg, conn, rvw, d, tr, rid, *, offline=False, guard=None, registry_changes=()) -> bool:
     """Every scanned release is routed: cleared by fact when nothing that can run changed, otherwise a short
     check or the full review. When the model can't take it now it waits, with no stored input, as
     "not reviewed yet"; nothing is cleared to catch up. Returns False when no more reviews should be sent now."""
-    r = routing.route(d)
+    r = routing.route(d, registry_changes)
     store.set_priority(conn, rid, r.priority)
     if r.tier == "fact":
         store.update_stage(conn, rid, "cleared_by_fact")
@@ -172,7 +172,8 @@ def evaluate_release(cfg, dl, ruleset, rvw, backend) -> dict:
     """The route and review one release gets, without the database (the evaluation harness uses this)."""
     ctx = {"current": dl.maintainer_metadata, "prior": None}
     _, d, tr = sandbox.analyze(cfg, dl, ctx, backend, ruleset)
-    if routing.route(d).tier == "fact":
+    reg = sandbox._manifest_diff(dl).package_json_changes if dl.manifest is not None else ()
+    if routing.route(d, reg).tier == "fact":
         return {"tier": "fact"}
     text = reviewer.short_input(d, tr)
     if text is not None:
@@ -241,12 +242,16 @@ def drain_pending(cfg, conn, rvw, *, auto: bool, reasons=None, limit=None, guard
             continue
         if row["pending_reason"] == "not_reviewed_yet":
             ruleset = ruleset if ruleset is not None else _load_ruleset(cfg)
-            scanned = _scan_release(cfg, NewRelease(row["package"], row["version"], row["serial"]), ruleset,
-                                    sandbox._backend)
+            try:
+                scanned = _scan_release(cfg, NewRelease(row["package"], row["version"], row["serial"]), ruleset,
+                                        sandbox._backend)
+                why = "no tarball on npm"
+            except Exception as e:           # one bad release never stops the drain (or the feed after it)
+                scanned, why = None, f"{type(e).__name__}: {e}"
             if scanned is None:
                 store.bump_review_attempts(conn, row["release_id"])
                 store.park_for_review(conn, row["release_id"], "review_failed",
-                                      "could not download it again to review", "")
+                                      f"could not download it again to review ({why})", "")
                 continue
             tried += 1
             if not _review_routed(cfg, conn, rvw, *scanned, row["release_id"], guard=guard):
@@ -403,6 +408,8 @@ def _process_fetched(cfg, conn, rvw, ruleset, rel, result, offline=False, guard=
             flags = {"has_lockfile": result.has_lockfile, "has_shrinkwrap": result.has_shrinkwrap}
             d = differ.build_diff(result)
             tr = engine.triage(d, cfg, ruleset, context)
+            sandbox._check_doc_names(d)             # the same parent-side facts the sandboxed path gets
+            object.__setattr__(d, "publishing", sandbox._publishing(result, context))
         store.update_npm_metadata(conn, rid, **flags)
         store.update_stage(conn, rid, "diffed")
         store.update_stage(conn, rid, "triaged", tr.score,
@@ -410,7 +417,9 @@ def _process_fetched(cfg, conn, rvw, ruleset, rel, result, offline=False, guard=
         ev = reviewer.build_evidence(d, tr, max_chars=cfg.evidence_max_chars) if tr.escalate else None
         if ev:      # kept only where rules fired strongly: the database must not grow with every routed release
             store.update_evidence(conn, rid, ev)
-        _review_routed(cfg, conn, rvw, d, tr, rid, offline=offline, guard=guard)
+        reg = (sandbox._manifest_diff(result).package_json_changes
+               if isinstance(result, Download) and result.manifest is not None else ())
+        _review_routed(cfg, conn, rvw, d, tr, rid, offline=offline, guard=guard, registry_changes=reg)
         return True
     except Exception as e:
         logger.exception("processing failed for %s==%s", rel.package, rel.version)

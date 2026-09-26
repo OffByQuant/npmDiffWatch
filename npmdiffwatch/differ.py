@@ -85,6 +85,9 @@ def _description(new_files) -> str:
     return " ".join(d.split())[:500] if isinstance(d, str) else ""     # one line: it must not pose as a hunk
 
 
+_INERT_TEXT_MAX = 256_000      # a doc-named file larger than this is not carried to be checked: it is data
+
+
 def build_diff(a: ArtifactSet) -> Diff:
     changed: list[FileDiff] = []
     pkg_changes: list[PkgJsonChange] = []
@@ -105,6 +108,14 @@ def build_diff(a: ArtifactSet) -> Diff:
         file_classes[path] = [cls, why]
         if cls == "inert" and new is None:      # a removed doc cannot run: listed, never diffed
             listed.append({"path": path, "size": 0, "class": "inert"})
+            continue
+        if cls == "inert" and len(new) > _INERT_TEXT_MAX:
+            cls, why = "data", "named like documentation, too large to check its content"
+            file_classes[path] = [cls, why]                 # fails closed: judged like code
+        elif cls == "inert":
+            # Text only, no hunks: the parent checks the content matches the name; the model is shown its name.
+            changed.append(FileDiff(path, "added" if prior is None else "modified", [],
+                                    new.decode("utf-8", errors="replace")))
             continue
         nl, pl = _lines(new or b""), _lines(prior or b"")
 
@@ -143,6 +154,10 @@ def build_diff(a: ArtifactSet) -> Diff:
             # The hook is new or changed, so what it runs is new behaviour even if the file itself is not.
             changed.append(FileDiff(path, "unchanged", [], a.new_files[path].decode("utf-8", errors="replace")))
             file_classes[path] = ["install", f"unchanged; the changed {hook} script runs it"]
+    for path, (cls, why) in execclass.entry_files(a.new_files, a.prior_files).items():
+        if path not in {f.path for f in changed}:
+            changed.append(FileDiff(path, "unchanged", [], a.new_files[path].decode("utf-8", errors="replace")))
+            file_classes[path] = [cls, f"unchanged; this release makes it an entry point ({why})"]
     changed_paths = {f.path for f in changed}
     diff = Diff(a.package, a.version, a.prior_version is None, changed,
                 list(a.added_binaries), list(a.added_dep_findings), pkg_changes, _description(a.new_files),

@@ -30,7 +30,7 @@ def test_an_unchanged_script_a_new_hook_runs_is_shown():
     assert fd.change_kind == "unchanged" and fd.new_text == _SCRIPT and fd.hunks == []
     assert d.file_classes["scripts/setup.js"][0] == "install"
     text = reviewer.build_review_input(d, TriageResult(0.0, [], False), max_chars=60_000)
-    assert "--- file: scripts/setup.js (unchanged; a changed install script runs it) ---" in text
+    assert "--- file: scripts/setup.js (unchanged; a changed install script or entry point now runs it) ---" in text
     assert "  console.log('setup');" in text
 
 

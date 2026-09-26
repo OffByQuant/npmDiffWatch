@@ -148,6 +148,7 @@ def _decode_output(raw: bytes, cfg, ruleset):
             _dict(f, "file diff")
             _check(f["change_kind"] in ("added", "removed", "modified", "unchanged"), "change kind")
             _check(f["change_kind"] != "unchanged" or not f["hunks"], "change kind")
+            _check(f["change_kind"] != "removed" or f["new_text"] is None, "change kind")
             hunks = [Hunk(_pair(h["old_range"], "hunk range"), _pair(h["new_range"], "hunk range"),
                           _strs(h["added"], "hunk"), _strs(h["removed"], "hunk")) for h in f["hunks"]]
             changed.append(FileDiff(_str(f["path"], "path"), f["change_kind"], hunks,
