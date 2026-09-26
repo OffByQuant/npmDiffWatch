@@ -456,8 +456,12 @@ def _quote_checks(d: dict, text: str) -> list[str]:
     code, classes = _shown_code(text)
     where, why = {}, []
     for end in ("source", "sink"):
-        q = _norm(d.get(f"chain_{end}_code")).strip("`")
-        where[end] = [p for p, t in code.items() if q in t] if len(q.replace(" ", "")) >= _MIN_QUOTE else []
+        raw = str(d.get(f"chain_{end}_code") or "").strip().strip("`")
+        q = _norm(raw)
+        # Each quoted line must be in the file; a model quoting several lines often drops a comment between them.
+        lines = [ln for ln in (_norm(x) for x in raw.splitlines()) if ln]
+        where[end] = ([p for p, t in code.items() if all(ln in t for ln in lines)]
+                      if len(q.replace(" ", "")) >= _MIN_QUOTE else [])
         if not where[end]:
             why.append(f"the {end} is not quoted from the shown code")
         elif all(p.endswith(_CODE_EXT) for p in where[end]) and _only_text(q):
