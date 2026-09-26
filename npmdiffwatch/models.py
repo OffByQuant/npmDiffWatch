@@ -80,3 +80,4 @@ class Verdict:
     runs_when: str | None = None
     chain_source: str | None = None
     chain_sink: str | None = None
+    review_tier: str | None = None     # "short" (clear-or-review check) or "full"

@@ -59,7 +59,7 @@ def migrate_schema(conn):
             else:
                 conn.execute(f"ALTER TABLE releases ADD COLUMN {col} TEXT")
             conn.commit()
-    for col in ("runs_when", "chain_source", "chain_sink"):
+    for col in ("runs_when", "chain_source", "chain_sink", "review_tier"):
         try:
             conn.execute(f"SELECT {col} FROM verdicts LIMIT 1")
         except sqlite3.OperationalError:
@@ -327,18 +327,19 @@ def record_alert(conn, release_id, classification, score, fired_rules_json, dedu
 def record_verdict(conn, release_id, verdict) -> int:
     conn.execute("""INSERT INTO verdicts
         (release_id,classification,confidence,attack_type,reasoning,cited_hunk,model,urgent,created_at,
-         runs_when,chain_source,chain_sink)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+         runs_when,chain_source,chain_sink,review_tier)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(release_id) DO UPDATE SET
           classification=excluded.classification, confidence=excluded.confidence,
           attack_type=excluded.attack_type, reasoning=excluded.reasoning,
           cited_hunk=excluded.cited_hunk, model=excluded.model,
           urgent=excluded.urgent, created_at=excluded.created_at,
-          runs_when=excluded.runs_when, chain_source=excluded.chain_source, chain_sink=excluded.chain_sink""",
+          runs_when=excluded.runs_when, chain_source=excluded.chain_source, chain_sink=excluded.chain_sink,
+          review_tier=excluded.review_tier""",
         (release_id, verdict.classification, verdict.confidence, verdict.attack_type,
          verdict.reasoning, verdict.cited_hunk, verdict.model, int(verdict.urgent), _now(),
          getattr(verdict, "runs_when", None), getattr(verdict, "chain_source", None),
-         getattr(verdict, "chain_sink", None)))
+         getattr(verdict, "chain_sink", None), getattr(verdict, "review_tier", None)))
     conn.commit()
     return conn.execute("SELECT id FROM verdicts WHERE release_id=?", (release_id,)).fetchone()[0]
 
