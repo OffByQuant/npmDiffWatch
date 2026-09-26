@@ -158,7 +158,9 @@ def build_diff(a: ArtifactSet) -> Diff:
         if path not in {f.path for f in changed}:
             changed.append(FileDiff(path, "unchanged", [], a.new_files[path].decode("utf-8", errors="replace")))
             file_classes[path] = [cls, f"unchanged; this release makes it an entry point ({why})"]
-    changed_paths = {f.path for f in changed}
+    unread = {b["path"] for b in a.added_binaries}
+    loaders.update(execclass.readers(a.new_files, classes, unread))
+    changed_paths = {f.path for f in changed} | unread
     diff = Diff(a.package, a.version, a.prior_version is None, changed,
                 list(a.added_binaries), list(a.added_dep_findings), pkg_changes, _description(a.new_files),
                 {p: c for p, c in file_classes.items() if p in changed_paths or c[0] == "inert"},

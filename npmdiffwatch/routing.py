@@ -75,7 +75,7 @@ def route(diff, registry_changes=()) -> Route:
         why.append("npm-shrinkwrap.json changed")
         prio = max(prio, 1)
     if diff.added_binaries:
-        why.append("binary or foreign-language file added")
+        why.append("a file that cannot be read as text was added or changed")
         prio = max(prio, 1)
     if diff.added_dep_findings:
         why.append("dependency screening lead")

@@ -65,7 +65,8 @@ when the package is imported, then commands, then other code, then data files. T
 says when each file runs and why; "X is loaded by: <line>" shows an unchanged line that reads a changed data \
 file, so the data can be code. Publishing, strings and dependency blocks are facts to check against the code: \
 none is evidence on its own, and a missing fact is not proof of safety. "not shown" lists files that did not \
-fit; you cannot see them. A file marked "unchanged" is shown because an install script or entry point this \
+fit; you cannot see them. Files that "cannot be read as text" (images, fonts, archives, compiled or very large \
+files) changed but are not shown either; code that reads one of them can be loading a payload. A file marked "unchanged" is shown because an install script or entry point this \
 release adds or changes now runs it: that it now runs is the new behaviour.
 
 WHAT MALICIOUS MEANS. Malicious is a complete chain in code this release adds, never a partial one. Both \
@@ -257,6 +258,16 @@ def _render_strings(diff) -> str:
             if found else "")
 
 
+_UNREAD_HEADING = "--- added or changed files that cannot be read as text (not shown) ---"
+
+
+def _render_unread(diff) -> str:
+    bins = getattr(diff, "added_binaries", [])
+    return (_UNREAD_HEADING + "\n" + "\n".join(_capped(
+        [f"  {_p(b.get('path', ''))} ({_one_line(str(b.get('reason') or 'binary'))}, {b.get('size', '?')} bytes)"
+         for b in bins], "files"))) if bins else ""
+
+
 def _render_not_shown(diff, unshown, by_path) -> str:
     if not unshown:
         return ""
@@ -281,7 +292,7 @@ def build_review_input(diff, triage, *, max_chars: int) -> str:
     facts = [p for p in (
         f"{_READ_FIRST} {', '.join(_p(p) for p in order[:_LIST_MAX])}"
         + (f", ... and {len(order) - _LIST_MAX} more" if len(order) > _LIST_MAX else "") if order else "",
-        _render_exec(diff), _render_publishing(getattr(diff, "publishing", {})), _render_strings(diff),
+        _render_exec(diff), _render_unread(diff), _render_publishing(getattr(diff, "publishing", {})), _render_strings(diff),
         _render_dep_leads(getattr(diff, "added_dep_findings", [])),
         f"{_DESC_HEADING}\n  {desc}" if desc else "",
         _render_pkg_json_changes(getattr(diff, "package_json_changes", [])),
