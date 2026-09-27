@@ -29,6 +29,11 @@ CREATE TABLE IF NOT EXISTS feed_retry(package TEXT PRIMARY KEY, seq INTEGER, att
 CREATE TABLE IF NOT EXISTS reviewer_stats(endpoint TEXT, model TEXT, tok_s REAL, chars_per_token REAL,
   samples INTEGER, state TEXT, detail TEXT, paused_until REAL, slow_streak INTEGER, updated_at TEXT,
   PRIMARY KEY(endpoint, model));
+CREATE TABLE IF NOT EXISTS flagged_packages(release_id INTEGER PRIMARY KEY, package TEXT, version TEXT,
+  prior_version TEXT, new_path TEXT, prior_path TEXT, bytes INTEGER, stored_at TEXT);
+CREATE TABLE IF NOT EXISTS investigations(id INTEGER PRIMARY KEY, release_id INTEGER, model TEXT,
+  created_at TEXT, status TEXT, verdict TEXT, outcome TEXT, confidence REAL, checklist_json TEXT, reason TEXT,
+  indicators_json TEXT, gate_notes TEXT, facts_json TEXT, steps INTEGER, tools_json TEXT, seconds REAL);
 """
 
 def _now(): return datetime.datetime.now(datetime.UTC).isoformat()
@@ -401,3 +406,20 @@ def prior_version(conn, package, version):
     row = conn.execute("""SELECT version FROM releases WHERE package=? AND version<?
         ORDER BY serial DESC LIMIT 1""", (package, version)).fetchone()
     return row[0] if row else None
+
+
+def flagged_put(conn, rid, package, version, prior_version, new_path, prior_path, nbytes):
+    conn.execute("INSERT OR IGNORE INTO flagged_packages(release_id, package, version, prior_version, new_path, "
+                 "prior_path, bytes, stored_at) VALUES (?,?,?,?,?,?,?,?)",
+                 (rid, package, version, prior_version, new_path, prior_path, nbytes, _now()))
+    conn.commit()
+
+def flagged_get(conn, rid):
+    return conn.execute("SELECT * FROM flagged_packages WHERE release_id=?", (rid,)).fetchone()
+
+def flagged_all(conn):
+    return conn.execute("""SELECT f.*, v.human_label FROM flagged_packages f
+                           LEFT JOIN verdicts v ON v.release_id = f.release_id ORDER BY f.stored_at""").fetchall()
+
+def flagged_delete(conn, rid):
+    conn.execute("DELETE FROM flagged_packages WHERE release_id=?", (rid,)); conn.commit()

@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 
-from . import ingest, fetcher, differ, engine, rules, notifier, store, reviewer, egress, dashboard, sandbox, routing
+from . import ingest, fetcher, differ, engine, rules, notifier, store, reviewer, egress, dashboard, sandbox, routing, flagged
 from . import guard as guard_mod
 from . import watchlist as watchlist_mod
 from .config import Config
@@ -84,6 +84,8 @@ def _record(cfg, conn, rid, verdict, score, partial=False, partial_suspicion=Fal
     else:
         notifier.emit(cfg, conn, verdict, rid)
         store.update_stage(conn, rid, "reviewed", score, None)
+        if verdict.classification == "malicious" and cfg.investigator.enabled:
+            flagged.capture(cfg, conn, rid)      # for the investigator, before npm removes it
 
 
 def _attempt_review(cfg, conn, rvw, rid, package, version, score, fired_rules, text, guard=None) -> bool:
