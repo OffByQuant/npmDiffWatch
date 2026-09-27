@@ -8,6 +8,7 @@ so all of it is html.escape'd and all URL path segments are urllib.parse.quote'd
 An XSS in the security dashboard would be a self-own.
 """
 import html
+import json
 from urllib.parse import quote, urlencode
 
 from . import guard as guard_mod
@@ -78,6 +79,28 @@ def counts(rows) -> dict:
             "unscanned": sum(1 for r in rows if unscanned(r))}
 
 
+def _investigation_html(row: dict) -> str:
+    e = html.escape
+    parts = []
+    if row.get("inv_status") == "ok":
+        out, verdict = row.get("inv_outcome") or "", (row.get("inv_verdict") or "").lower()
+        was = (row.get("classification") or "").lower()
+        head = (f"Investigated: {e(verdict)} — was {e(was)} ({e(out)})" if verdict != was
+                else f"Investigated: {e(verdict)} ({e(out)})")
+        parts.append(f'<div class="inv {e(out)}">{head}'
+                     + (f' · {e(row.get("inv_reason") or "")}' if row.get("inv_reason") else "") + "</div>")
+        try:
+            ind = json.loads(row.get("inv_indicators") or "[]")
+        except ValueError:
+            ind = []
+        if ind:
+            parts.append('<div class="inv-ind"><span class="k">indicators</span> '
+                         + ", ".join(e(str(x)) for x in ind[:20]) + "</div>")
+    if row.get("inv_failed"):
+        parts.append(f'<div class="inv failed">{int(row["inv_failed"])} investigation attempt(s) failed</div>')
+    return "".join(parts)
+
+
 def _card(row: dict) -> str:
     cls = "unscanned" if unscanned(row) else (effective_class(row) or "benign")
     pkg = row.get("package") or ""
@@ -95,6 +118,7 @@ def _card(row: dict) -> str:
     reasoning = row.get("reasoning") or ""
     cited = row.get("cited_hunk") or ""
     reason_html = f'<div class="reason">{e(reasoning)}</div>' if reasoning else ""
+    investigation_html = _investigation_html(row)
     cited_html = (f'<div class="cited"><span class="k">cited</span> {e(cited)}</div>'
                   if cited else "")
     human = row.get("human_label")
@@ -120,6 +144,7 @@ def _card(row: dict) -> str:
   </div>
   {human_html}
   {reason_html}
+  {investigation_html}
   {cited_html}
   <div class="actions">{''.join(actions)}</div>
 </div>"""
@@ -150,6 +175,12 @@ h1{font-size:24px;letter-spacing:-.3px}.sub{color:var(--muted);margin:6px 0 28px
 .actions{display:flex;gap:10px;margin-top:14px}
 .btn{font-size:13px;font-weight:600;text-decoration:none;padding:8px 14px;border-radius:8px;border:1px solid var(--line);color:var(--ink)}
 .btn.report{background:#2d1416;border-color:var(--red);color:var(--red)}
+.inv{margin-top:6px;font-size:13px}
+.inv.confirmed{color:var(--red)}
+.inv.disputed{color:var(--amber, #b7791f)}
+.inv.contested{color:var(--red);font-weight:600}
+.inv.failed{opacity:.7}
+.inv-ind{font-size:12px;opacity:.85}
 .btn.view{color:#58a6ff}
 .status{display:flex;flex-wrap:wrap;gap:8px 22px;align-items:center;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 18px;margin-bottom:24px;font-size:13px;color:var(--muted)}
 .status .stat{display:flex;align-items:center;gap:7px}
