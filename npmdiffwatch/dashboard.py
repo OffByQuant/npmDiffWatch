@@ -217,5 +217,5 @@ def render_dashboard(rows, status: dict = None, generated_at: str = "") -> str:
 <div class="sub">{c["model_reviewed"]} package(s) reviewed by the model · {c["flagged"]} flagged for review{f" · {c['unscanned']} not scanned — need manual review" if c["unscanned"] else ""}{gen}</div>
 {strip}
 {cards}
-<footer>Flagged a real attack? “Report malware on npm” opens npm’s report form for that version. Static, no-execution analysis · 100% local.</footer>
+<footer>Flagged a real attack? The report button opens npm’s malware report form for that version. Static, no-execution analysis · 100% local.</footer>
 </body></html>"""
