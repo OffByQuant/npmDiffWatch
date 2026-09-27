@@ -65,7 +65,7 @@ def _partial_suspicion(verdict, text) -> bool:
     """Suspicious with no chain cited, on a release the model could not see whole: the suspicion is about what it
     could not see. It goes to the "couldn't see everything" queue, not among the suspicions with a lead."""
     return (verdict.classification == "suspicious" and not (verdict.chain_source or verdict.chain_sink)
-            and reviewer.saw_part(text))
+            and reviewer.saw_part(text) and not reviewer.has_shown_lead(text))
 
 
 def _record(cfg, conn, rid, verdict, score, partial=False, partial_suspicion=False):

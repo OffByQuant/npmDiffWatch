@@ -337,6 +337,12 @@ def saw_part(review_input: str) -> bool:
     return has_unshown_runnable(review_input) or _UNREAD_HEADING in review_input
 
 
+def has_shown_lead(review_input: str) -> bool:
+    """The input carries a lead of its own: a dependency finding or a changed package.json script."""
+    return _DEPS_HEADING in review_input or re.search(r"^--- package\.json changes ---\n(?:  .*\n)*?  scripts: ",
+                                                       review_input, re.M) is not None
+
+
 def build_evidence(diff, triage, *, max_chars: int) -> str:
     flagged = {r.file for r in triage.fired_rules if r.lines != (0, 0)}
     by_path = {fd.path: fd for fd in diff.changed if fd.path in flagged}
@@ -465,6 +471,17 @@ def _names(code: str, path: str) -> bool:
     return any(re.search(rf"(?<![\w$-]){re.escape(t)}(?![\w$-])", code) for t in tokens if t)
 
 
+def _in_order(lines: list[str], text: str) -> bool:
+    """Every quoted line is in the text, in the quoted order (lines the model left out may sit between them)."""
+    pos = 0
+    for ln in lines:
+        pos = text.find(ln, pos)
+        if pos < 0:
+            return False
+        pos += len(ln)
+    return True
+
+
 def _quote_checks(d: dict, text: str) -> list[str]:
     code, classes = _shown_code(text)
     where, why = {}, []
@@ -473,8 +490,8 @@ def _quote_checks(d: dict, text: str) -> list[str]:
         q = _norm(raw)
         # Each quoted line must be in the file; a model quoting several lines often drops a comment between them.
         lines = [ln for ln in (_norm(x) for x in raw.splitlines()) if ln]
-        where[end] = ([p for p, t in code.items() if all(ln in t for ln in lines)]
-                      if len(q.replace(" ", "")) >= _MIN_QUOTE else [])
+        long_enough = any(len(ln.replace(" ", "")) >= _MIN_QUOTE for ln in lines)
+        where[end] = [p for p, t in code.items() if _in_order(lines, t)] if long_enough else []
         if not where[end]:
             why.append(f"the {end} is not quoted from the shown code")
         elif all(p.endswith(_CODE_EXT) for p in where[end]) and _only_text(q):
