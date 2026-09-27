@@ -205,3 +205,15 @@ def test_the_header_does_not_count_unscanned_as_reviewed_or_flagged(tmp_path):
                                             model="none"))
     text = Path(orchestrator.export_dashboard(cfg, tmp_path / "d.html")).read_text()
     assert "0 reviewed by the model" in text and "0 flagged" in text and "1 not scanned" in text
+
+
+def test_the_report_button_opens_npms_malware_report_form():
+    html = dashboard.render_dashboard([_row("evil-pkg", "1.0.0", "malicious")])
+    assert ('href="https://www.npmjs.com/support?inquire=security&amp;security-inquire=malware'
+            '&amp;package=evil-pkg&amp;version=1.0.0"') in html
+
+
+def test_a_scoped_package_is_encoded_in_the_report_form_url():
+    assert dashboard.npm_report_url("@acme/evil", "2.0.0-rc.1") == (
+        "https://www.npmjs.com/support?inquire=security&security-inquire=malware"
+        "&package=%40acme%2Fevil&version=2.0.0-rc.1")
