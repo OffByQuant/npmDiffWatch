@@ -74,3 +74,25 @@ def test_a_failed_run_is_retried_next_time(tmp_path, monkeypatch):
     _run(cfg, monkeypatch, fail)
     inv = _Inv(); _run(cfg, monkeypatch, inv)
     assert inv.seen == ["1.0.0"] and store.failed_investigations(conn, rid) == 1
+
+
+def test_an_unreadable_stored_package_is_recorded_once_then_dropped(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path); conn = store.connect(cfg); store.init_schema(conn)
+    rid = _flag(cfg, conn, "1.0.0")
+    import os; os.unlink(store.flagged_get(conn, rid)["new_path"])
+    _run(cfg, monkeypatch, _Inv()); _run(cfg, monkeypatch, _Inv())
+    assert len(store.investigations_for(conn, rid)) == 1 and store.flagged_get(conn, rid) is None
+
+
+def test_the_daily_prune_also_prunes_flagged_packages(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    seen = []
+    monkeypatch.setattr(orchestrator.flagged, "prune", lambda c, conn, now=None: seen.append(1) or 0)
+    orchestrator.prune(cfg)
+    assert seen == [1]
+
+
+def test_investigations_are_indexed_by_release(tmp_path):
+    cfg = _cfg(tmp_path); conn = store.connect(cfg); store.init_schema(conn)
+    names = [r[1] for r in conn.execute("PRAGMA index_list(investigations)")]
+    assert "ix_inv_release" in names

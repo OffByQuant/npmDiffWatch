@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS flagged_packages(release_id INTEGER PRIMARY KEY, pack
 CREATE TABLE IF NOT EXISTS investigations(id INTEGER PRIMARY KEY, release_id INTEGER, model TEXT,
   created_at TEXT, status TEXT, verdict TEXT, outcome TEXT, confidence REAL, checklist_json TEXT, reason TEXT,
   indicators_json TEXT, gate_notes TEXT, facts_json TEXT, steps INTEGER, tools_json TEXT, seconds REAL);
+CREATE INDEX IF NOT EXISTS ix_inv_release ON investigations(release_id);
 """
 
 def _now(): return datetime.datetime.now(datetime.UTC).isoformat()

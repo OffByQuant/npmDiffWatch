@@ -588,6 +588,7 @@ def prune(cfg: Config) -> int:
     conn = store.connect(cfg); store.init_schema(conn)
     try:
         store.prune(conn, cfg.retention_days)
+        flagged.prune(cfg, conn)
     finally:
         conn.close()
     return before - size()
@@ -927,6 +928,7 @@ def run_investigations(cfg, only=None, *, backend=None, workspace=None, clock=ti
             if dl is None:
                 store.add_investigation(conn, rid, model,
                                         {"status": "partial", "error": "package not stored or no longer readable"})
+                store.flagged_delete(conn, rid)          # recorded once; nothing left to investigate
                 out.append({"package": row["package"], "version": row["version"], "status": "partial"})
                 continue
             original = {"package": row["package"], "version": row["version"], "prior_version": dl.prior_version,

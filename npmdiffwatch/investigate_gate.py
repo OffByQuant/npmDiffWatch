@@ -91,4 +91,6 @@ def judge(answer: dict, ws) -> Outcome:
         notes.append("no quoted explanation of the original chain")
     if not (covered and explained):
         return Outcome("malicious", "contested" if injected else "inconclusive", notes, rejected)
-    return Outcome(verdict, "contested" if injected else "disputed", notes, rejected)
+    if injected:            # an injection attempt never clears anything
+        return Outcome("malicious", "contested", notes, rejected)
+    return Outcome(verdict, "disputed", notes, rejected)

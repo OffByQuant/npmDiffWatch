@@ -149,8 +149,10 @@ class Workspace:
             raise ToolError("arguments must be an object")
         try:
             out = fn(**args)
-        except TypeError as e:
-            raise ToolError(f"bad arguments for {name}: {e}") from e
+        except (TypeError, ValueError, AttributeError, KeyError) as e:
+            raise ToolError(f"bad arguments or data for {name}: {e}") from e
+        except (fetcher.RefusedToExtract, sandbox.SandboxError) as e:
+            raise ToolError(f"could not unpack: {e}") from e
         self.log.append({"tool": name, "args": {k: str(v)[:200] for k, v in args.items()}})
         return out
 
@@ -218,7 +220,7 @@ class Workspace:
             targets = execclass._command_files(cmd, files)
             note = " (runs only from a git checkout or npm publish, not on a registry install)" if hook == "prepare" else ""
             out.append(f"{hook}: {cmd}{note}\n  runs: " + (", ".join(targets) if targets else "inline (no file in package)"))
-        return self._seen(version, "package.json", "\n".join(out) if out else "no install scripts")
+        return self._seen("scripts", version, "\n".join(out) if out else "no install scripts")   # a summary, not a file
 
     def _t_decode(self, methods, value=None, ref=None):
         if not isinstance(methods, list) or not 1 <= len(methods) <= _DECODE_PER_CALL:
@@ -282,7 +284,7 @@ class Workspace:
                 out.append("... (diff truncated)")
                 break
         text = "\n".join(out)[: self.inv.read_chars] or "no differences"
-        return self._seen(version_b, "(diff)", text)
+        return self._seen("diff", f"{version_a}..{version_b}", text)    # never quotable as a flagged file
 
     def _t_versions(self, package):
         meta = self._json(_pkg_url(_name(package)))

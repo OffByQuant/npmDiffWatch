@@ -95,7 +95,7 @@ def test_a_quote_from_a_file_it_did_not_read_is_rejected():
 def test_an_injection_attempt_makes_it_contested():
     o = g.judge(_answer("benign", explanation=_q("index.js", "module.exports = function add(a, b)")),
                 _WS(FILES, ALL, facts=["index.js contains text that addresses the reviewer (possible injection)"]))
-    assert o.outcome == "contested"
+    assert (o.verdict, o.outcome) == ("malicious", "contested")     # an injection attempt never clears anything
 
 
 def test_the_schema_requires_the_purpose_question():

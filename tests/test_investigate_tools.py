@@ -158,3 +158,35 @@ def test_unknown_tool_and_bad_arguments_are_tool_errors():
         ws.call("shell", {"cmd": "id"})
     with pytest.raises(it.ToolError):
         ws.call("read", {"version": "flagged"})
+
+
+# Final review fixes: summaries are never quotable as a flagged file; any tool failure is a tool error.
+def test_a_diff_is_not_recorded_as_flagged_file_content():
+    ws = _ws()
+    ws.call("diff", {"version_a": "prior", "version_b": "flagged"})
+    assert not any(v == "flagged" for v, _ in ws.read_text)
+
+
+def test_the_scripts_summary_is_not_recorded_as_package_json():
+    ws = _ws()
+    ws.call("scripts", {"version": "flagged"})
+    assert ("flagged", "package.json") not in ws.read_text
+
+
+def test_a_non_numeric_line_is_a_tool_error():
+    with pytest.raises(it.ToolError):
+        _ws().call("read", {"version": "flagged", "path": "index.js", "from_line": "abc"})
+
+
+def test_a_corrupt_fetched_tarball_is_a_tool_error():
+    http = _Http({"https://registry.npmjs.org/p": {"versions": {"0.9.0": {"dist": {
+                  "tarball": "https://registry.npmjs.org/p/-/p-0.9.0.tgz"}}}},
+                  "https://registry.npmjs.org/p/-/p-0.9.0.tgz": b"not a tarball"})
+    with pytest.raises(it.ToolError):
+        _ws(http).call("fetch", {"package": "p", "version": "0.9.0"})
+
+
+def test_odd_registry_metadata_is_a_tool_error():
+    http = _Http({"https://registry.npmjs.org/p": {"versions": {"1.0.0": "not an object"}}})
+    with pytest.raises(it.ToolError):
+        _ws(http).call("versions", {"package": "p"})
