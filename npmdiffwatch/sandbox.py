@@ -51,7 +51,7 @@ def compute(cfg, dl: Download, maintainer_context, ruleset):
 
 # ---- parent -> worker: one JSON line, then the raw tarballs ----
 def _cfg_to_dict(cfg) -> dict:
-    d = {f.name: getattr(cfg, f.name) for f in dataclasses.fields(cfg) if f.name != "reviewer"}
+    d = {f.name: getattr(cfg, f.name) for f in dataclasses.fields(cfg) if f.name not in ("reviewer", "investigator")}
     for k in _PATH_FIELDS:
         if d[k] is not None:
             d[k] = str(Path(d[k]).resolve())

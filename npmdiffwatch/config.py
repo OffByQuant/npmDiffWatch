@@ -27,6 +27,28 @@ class ReviewerConfig:
 
 
 @dataclass(frozen=True)
+class InvestigatorConfig:
+    enabled: bool = False
+    provider: str = "openai"           # "openai" (any OpenAI-compatible endpoint) or "anthropic"
+    base_url: str = "http://localhost:8080/v1"
+    model: str = "local-model"
+    api_key_env: str | None = None
+    max_steps: int = 15
+    timeout_s: float = 1800.0          # per investigation
+    max_output_tokens: int = 4096      # per model turn
+    max_download_mb: int = 50          # per investigation, across every fetch
+    max_extracted_mb: int = 200        # unpacked text held in memory across all versions
+    whole_file_chars: int = 60_000     # a read of a whole file up to this size counts as examined
+    read_chars: int = 8_000            # a ranged read returns at most this much
+    max_decoded_bytes: int = 2_000_000  # total decode output per investigation
+    allow_hosts: tuple = ("registry.npmjs.org", "api.github.com")
+    also_allow: tuple = ()
+    github_token_env: str | None = None   # name of an env var holding a GitHub token (sent to /repos/ only)
+    keep_flagged_days: int = 30
+    flagged_max_gb: float = 5.0
+
+
+@dataclass(frozen=True)
 class Config:
     db_path: Path = Path(".diffwatch/diffwatch.sqlite")
     cache_dir: Path = Path(".diffwatch/artifact_cache")
@@ -65,16 +87,21 @@ class Config:
     rules_dir: Path = Path("rules/community")
     top_npm_path: Path = None
     reviewer: ReviewerConfig = field(default_factory=ReviewerConfig)
+    investigator: InvestigatorConfig = field(default_factory=InvestigatorConfig)
 
 
 def load_config(path) -> Config:
     raw = tomllib.loads(Path(path).read_text())
     rv = raw.pop("reviewer", {})
+    iv = raw.pop("investigator", {})
     default_rv = ReviewerConfig()
     reviewer = replace(default_rv, **{k: v for k, v in rv.items() if hasattr(default_rv, k)})
+    default_iv = InvestigatorConfig()
+    iv = {k: (tuple(v) if isinstance(v, list) else v) for k, v in iv.items() if hasattr(default_iv, k)}
+    investigator = replace(default_iv, **iv)
     default = Config()
-    top = {k: v for k, v in raw.items() if hasattr(default, k) and k != "reviewer"}
+    top = {k: v for k, v in raw.items() if hasattr(default, k) and k not in ("reviewer", "investigator")}
     for pk in ("db_path", "cache_dir", "lock_path", "rules_dir", "top_npm_path"):
         if pk in top:
             top[pk] = Path(top[pk])
-    return replace(default, reviewer=reviewer, **top)
+    return replace(default, reviewer=reviewer, investigator=investigator, **top)
