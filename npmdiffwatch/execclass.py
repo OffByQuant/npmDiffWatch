@@ -157,6 +157,12 @@ def _loaders(files, shipped, targets) -> dict[str, list[str]]:
     return found
 
 
+def readers(files, classes, targets) -> dict[str, list[str]]:
+    """Lines of shipped code that name a member kept out of `files` (not text, or too large)."""
+    return _loaders(files, [p for p, (c, _) in classes.items() if c in ("install", "load", "command", "other")],
+                    set(targets))
+
+
 def classify(files: dict) -> tuple[dict[str, tuple[str, str]], dict[str, list[str]]]:
     pj = _manifest(files)
     classes: dict[str, tuple[str, str]] = {}

@@ -1,5 +1,7 @@
 import json
 import logging
+import posixpath
+import re
 import secrets
 
 from . import execclass, strings
@@ -27,6 +29,8 @@ REVIEW_SCHEMA = {
                       "default": "unknown"},
         "chain_source": {"type": "string", "default": ""},
         "chain_sink": {"type": "string", "default": ""},
+        "chain_source_code": {"type": "string", "default": ""},
+        "chain_sink_code": {"type": "string", "default": ""},
         "classification": {"type": "string", "enum": ["malicious", "suspicious", "benign"]},
         "confidence": {"type": "number", "default": 0.0},
         "attack_type": {"type": "string", "enum": [
@@ -38,7 +42,7 @@ REVIEW_SCHEMA = {
                                "enum": ["report-to-npm", "monitor", "dismiss"], "default": "monitor"},
         "urgent": {"type": "boolean", "default": False},
     },
-    "required": ["runs_when", "chain_source", "chain_sink", "classification", "confidence", "attack_type",
+    "required": ["runs_when", "chain_source", "chain_sink", "chain_source_code", "chain_sink_code", "classification", "confidence", "attack_type",
                  "reasoning", "cited_hunk", "recommended_action", "urgent"],
     "additionalProperties": False,
 }
@@ -65,7 +69,8 @@ when the package is imported, then commands, then other code, then data files. T
 says when each file runs and why; "X is loaded by: <line>" shows an unchanged line that reads a changed data \
 file, so the data can be code. Publishing, strings and dependency blocks are facts to check against the code: \
 none is evidence on its own, and a missing fact is not proof of safety. "not shown" lists files that did not \
-fit; you cannot see them. A file marked "unchanged" is shown because an install script or entry point this \
+fit; you cannot see them. Files that "cannot be read as text" (images, fonts, archives, compiled or very large \
+files) changed but are not shown either; code that reads one of them can be loading a payload. A file marked "unchanged" is shown because an install script or entry point this \
 release adds or changes now runs it: that it now runs is the new behaviour.
 
 WHAT MALICIOUS MEANS. Malicious is a complete chain in code this release adds, never a partial one. Both \
@@ -105,8 +110,12 @@ STATED PURPOSE IS CONTEXT, NOT EVIDENCE. The package description, name, README, 
 the author's claims. They can neither excuse a concrete malicious chain nor make a release malicious. Calling \
 a send of pre-existing secrets "telemetry" or "analytics" does not make it benign.
 
-OUTPUT: respond ONLY via the enforced structured schema. Fill runs_when, chain_source and chain_sink before \
-classification; leave chain_source and chain_sink empty for a benign verdict."""  # nosemgrep
+QUOTE BOTH ENDS. chain_source_code and chain_sink_code are the code itself, copied exactly from one or two \
+shown lines (without the leading "+ "): not a description. A string, comment or test data that mentions \
+reading or sending secrets is not a source or a sink; quote the code that does it.
+
+OUTPUT: respond ONLY via the enforced structured schema. Fill runs_when, the chain fields and their quotes \
+before classification; leave them empty for a benign verdict."""  # nosemgrep
 
 SHORT_CHECK_CHARS = 16_000      # ~4,000 tokens; a larger change always gets the full review
 
@@ -125,8 +134,8 @@ changes, with facts about how its files run and how it was published. Decide onl
 Answer "review" if the added or changed code could be any part of these chains: reading secrets (tokens, \
 ~/.npmrc, ~/.ssh, ~/.aws, credentials, process.env) and sending anything off the machine; fetching or decoding \
 code and running it; spreading to other packages or projects, or deleting or encrypting user files. Also answer \
-"review" for obfuscated or minified code you cannot read, for anything that runs at install, and whenever you \
-are unsure. Answer "clear" only when the change plainly does none of this. "clear" means only that no full \
+"review" for obfuscated or minified code you cannot read, for anything that runs at install, when code reads a \
+changed file that "cannot be read as text", and whenever you are unsure. Answer "clear" only when the change plainly does none of this. "clear" means only that no full \
 review is needed.
 
 OUTPUT: respond ONLY via the enforced structured schema.""")  # nosemgrep
@@ -257,6 +266,16 @@ def _render_strings(diff) -> str:
             if found else "")
 
 
+_UNREAD_HEADING = "--- added or changed files that cannot be read as text (not shown) ---"
+
+
+def _render_unread(diff) -> str:
+    bins = getattr(diff, "added_binaries", [])
+    return (_UNREAD_HEADING + "\n" + "\n".join(_capped(
+        [f"  {_p(b.get('path', ''))} ({_one_line(str(b.get('reason') or 'binary'))}, {b.get('size', '?')} bytes)"
+         for b in bins], "files"))) if bins else ""
+
+
 def _render_not_shown(diff, unshown, by_path) -> str:
     if not unshown:
         return ""
@@ -281,7 +300,7 @@ def build_review_input(diff, triage, *, max_chars: int) -> str:
     facts = [p for p in (
         f"{_READ_FIRST} {', '.join(_p(p) for p in order[:_LIST_MAX])}"
         + (f", ... and {len(order) - _LIST_MAX} more" if len(order) > _LIST_MAX else "") if order else "",
-        _render_exec(diff), _render_publishing(getattr(diff, "publishing", {})), _render_strings(diff),
+        _render_exec(diff), _render_unread(diff), _render_publishing(getattr(diff, "publishing", {})), _render_strings(diff),
         _render_dep_leads(getattr(diff, "added_dep_findings", [])),
         f"{_DESC_HEADING}\n  {desc}" if desc else "",
         _render_pkg_json_changes(getattr(diff, "package_json_changes", [])),
@@ -289,17 +308,20 @@ def build_review_input(diff, triage, *, max_chars: int) -> str:
     tail = (_LISTED_HEADING + "\n" + "\n".join(_capped(
         [f"  {_p(x['path'])} (inert, {x['size']} bytes, not shown)" for x in listed], "files"))) if listed else ""
     used = len(header) + len(marker) + sum(len(p) + 1 for p in facts) + len(tail) + 1
-    shown: list[str] = []
+    shown: dict[str, str] = {}
     for path in order:
         rendered = _render_file(by_path[path])
         if used + len(rendered) + 1 > max_chars:
-            break                          # stop at the first file that does not fit: order is importance
-        shown.append(rendered); used += len(rendered) + 1
-    not_shown = _render_not_shown(diff, order[len(shown):], by_path)
+            continue                       # skip a file that does not fit; smaller ones after it still can
+        shown[path] = rendered; used += len(rendered) + 1
+
+    def unshown() -> str:
+        return _render_not_shown(diff, [p for p in order if p not in shown], by_path)
+    not_shown = unshown()
     while shown and used + len(not_shown) + 1 > max_chars:     # the not-shown list counts against the cap too
-        used -= len(shown.pop()) + 1
-        not_shown = _render_not_shown(diff, order[len(shown):], by_path)
-    parts = facts + shown + ([tail] if tail else []) + ([not_shown] if not_shown else [])
+        used -= len(shown.pop(next(reversed(shown)))) + 1
+        not_shown = unshown()
+    parts = facts + list(shown.values()) + ([tail] if tail else []) + ([not_shown] if not_shown else [])
     return header + "\n".join(parts) + f"\n{marker}"
 
 
@@ -308,6 +330,11 @@ def has_unshown_runnable(review_input: str) -> bool:
         return False
     block = review_input.split(_NOT_SHOWN_HEADING, 1)[1]
     return any(f"({c}," in block for c in _RUNNABLE)
+
+
+def saw_part(review_input: str) -> bool:
+    """The model could not see all of it: a runnable file did not fit, or a changed file cannot be read as text."""
+    return has_unshown_runnable(review_input) or _UNREAD_HEADING in review_input
 
 
 def build_evidence(diff, triage, *, max_chars: int) -> str:
@@ -374,15 +401,107 @@ def _clamp01(x) -> float:
         return 0.0
 
 
-def apply_chain_gate(d: dict) -> dict:
-    """A malicious verdict stands only for a complete chain that runs without the user asking: both ends cited,
-    and code that runs at install or load. Anything less is held as suspicious for a person to confirm."""
+_HEADING = re.compile(r"^--- (.*) ---$")
+_FILE_HEADING = re.compile(r"^file: (.+) \([^()]*\)$")
+_CODE_EXT = (".js", ".mjs", ".cjs", ".jsx", ".ts", ".mts", ".cts", ".tsx")
+_TEXT_PARTS = re.compile(r"""(['"`])(?:\\.|(?!\1).)*\1|//.*|/\*.*?\*/|^\s*\*.*""")
+_KEY = re.compile(r"[\w$]+\s*:(?!:)")
+_EXEC_LINE = re.compile(r"^  (.+): (install|load|command|other|data|not-shipped|inert) — ")
+_JSON_ESCAPE = re.compile(r'\\(["\\/])')
+_MIN_QUOTE = 8
+
+
+def _norm(s: str) -> str:
+    return " ".join(str(s or "").split())
+
+
+def _shown_code(text: str) -> tuple[dict[str, str], dict[str, str]]:
+    """What the model was shown, by file: added and whole-file lines (removed lines are not evidence), and the
+    package.json changes as "package.json". Also the class of each file from the execution context block."""
+    code: dict[str, list[str]] = {}
+    classes: dict[str, str] = {}
+    section, is_exec = None, False
+    for line in text.splitlines():
+        if (h := _HEADING.match(line)):
+            m = _FILE_HEADING.match(h.group(1))
+            section = m.group(1) if m else "package.json" if h.group(1) == "package.json changes" else None
+            is_exec = line == _EXEC_HEADING
+            continue
+        if is_exec:
+            if (m := _EXEC_LINE.match(line)):      # greedy path: a path holding ": <class> — " stays one path
+                classes.setdefault(m.group(1), m.group(2))
+        elif section is not None and not line.startswith("- ") and line != text.rsplit("\n", 1)[-1]:
+            ln = line[2:] if line[:2] in ("+ ", "  ") else line
+            if section.endswith(".json"):       # JSON strings are shown escaped; the model quotes them as read
+                ln += " \n " + _JSON_ESCAPE.sub(r"\1", ln)
+            code.setdefault(section, []).append(ln)
+    return {p: _norm(" ".join(ls)) for p, ls in code.items()}, classes
+
+
+_LITERAL = re.compile(r"""(['"`])((?:\\.|(?!\1).)*)\1""")
+
+
+def _only_text(q: str) -> bool:
+    """Text that mentions an action, not code doing it: a comment, or string literals and object keys where some
+    string is prose (has spaces). A lone value such as `hostname: '192.0.2.10'` is an option of the call, not
+    prose."""
+    if "${" in q:
+        return False
+    if re.search(r"[A-Za-z_$#][\w$]*", _KEY.sub(" ", _TEXT_PARTS.sub(" ", q))):
+        return False                            # code remains once strings, comments and keys are gone
+    strings = [m.group(2) for m in _LITERAL.finditer(q)]
+    return not strings or any(" " in x.strip() for x in strings)
+
+
+def _token(path: str) -> str:
+    """How other code names a file: its name without extension (the directory's, for an index file)."""
+    stem = posixpath.splitext(posixpath.basename(path))[0]
+    return posixpath.basename(posixpath.dirname(path)) if stem == "index" and "/" in path else stem
+
+
+def _names(code: str, path: str) -> bool:
+    """The code names the file, or a directory it sits in (a require of a directory reaches the files in it)."""
+    tokens = {_token(path)} | {d for d in posixpath.dirname(path).split("/") if len(d) > 1}
+    return any(re.search(rf"(?<![\w$-]){re.escape(t)}(?![\w$-])", code) for t in tokens if t)
+
+
+def _quote_checks(d: dict, text: str) -> list[str]:
+    code, classes = _shown_code(text)
+    where, why = {}, []
+    for end in ("source", "sink"):
+        raw = str(d.get(f"chain_{end}_code") or "").strip().strip("`")
+        q = _norm(raw)
+        # Each quoted line must be in the file; a model quoting several lines often drops a comment between them.
+        lines = [ln for ln in (_norm(x) for x in raw.splitlines()) if ln]
+        where[end] = ([p for p, t in code.items() if all(ln in t for ln in lines)]
+                      if len(q.replace(" ", "")) >= _MIN_QUOTE else [])
+        if not where[end]:
+            why.append(f"the {end} is not quoted from the shown code")
+        elif all(p.endswith(_CODE_EXT) for p in where[end]) and _only_text(q):
+            why.append(f"the quoted {end} is a string or comment, not code")
+        elif all(classes.get(p) == "not-shipped" for p in where[end]):
+            why.append(f"the {end} is in code that is not shipped")
+    if where["source"] and where["sink"] and not any(
+            s == k or _names(code[s], k) or _names(code[k], s) for s in where["source"] for k in where["sink"]):
+        why.append("source and sink are not in the same file or in files that name each other")
+    return why
+
+
+def apply_chain_gate(d: dict, text: str | None = None) -> dict:
+    """A malicious verdict stands only for a complete chain that runs without the user asking: both ends cited
+    and, when the input is given, quoted from the shown code, in one file or files that name each other, in
+    shipped code, and code rather than text about it; code that runs at install or load. Anything less is held
+    as suspicious for a person to confirm."""
     if d.get("classification") != "malicious":
         return d
     why = [w for w, bad in (("no source cited", not str(d.get("chain_source") or "").strip()),
                             ("no sink cited", not str(d.get("chain_sink") or "").strip()),
-                            (f"runs only as {d.get('runs_when')}", d.get("runs_when") in ("command", "not-shipped")))
+                            (f"runs only as {d.get('runs_when')}", d.get("runs_when") in ("command", "not-shipped")),
+                            ("when it runs is unknown", d.get("runs_when") not in ("install", "load", "command",
+                                                                                   "not-shipped")))
            if bad]
+    if text is not None:
+        why += _quote_checks(d, text)
     if not why:
         return d
     return {**d, "classification": "suspicious", "recommended_action": "monitor", "urgent": False,
@@ -396,8 +515,9 @@ class Reviewer:
         self.backend = backend if backend is not None else make_backend(cfg)
 
     def prepare(self, diff, triage, cap=None) -> str:
-        """Build the review input, or raise InputTooLarge if the highest-risk file can't fit in `cap`
-        (default: max_input_chars; the guard passes the endpoint's measured cap)."""
+        """Build the review input, or raise InputTooLarge if no changed file fits in `cap` (default:
+        max_input_chars; the guard passes the endpoint's measured cap). Files that do not fit are skipped and
+        listed as not shown; a benign verdict then stays in pending as reviewed_partial."""
         cap = cap or self.cfg.reviewer.max_input_chars
         text = build_review_input(diff, triage, max_chars=cap)
         order = _order_files(diff)
@@ -452,7 +572,7 @@ class Reviewer:
                                      schema=REVIEW_SCHEMA, max_tokens=self.cfg.reviewer.max_output_tokens,
                                      timeout=timeout)
         d = json.loads(text)
-        d = apply_chain_gate(d)
+        d = apply_chain_gate(d, user_text)
         # recommended_action is informational (a human adjudicates downstream), so validate_verdict
         # already coerced any out-of-enum value to "monitor". But "monitor" on confirmed malware reads
         # wrong in an alert: fail toward caution and always surface report-to-npm for a malicious verdict.

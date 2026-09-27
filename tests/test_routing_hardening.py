@@ -144,3 +144,14 @@ def test_the_unsandboxed_path_gets_publishing_facts_and_can_clear_by_fact(tmp_pa
                       maintainer_metadata=meta)
     orchestrator._process_fetched(cfg, conn, None, orchestrator._load_ruleset(cfg), NewRelease("p", "1.0.1", 5), art)
     assert store.get_stage(conn, "p", "1.0.1") == "cleared_by_fact"
+
+
+def test_a_binary_entry_without_a_string_path_is_malformed():
+    d = differ.build_diff(_art({"package.json": '{"name":"p","version":"1.0.0"}'},
+                               {"package.json": '{"name":"p","version":"1.0.1"}'}))
+    tr = engine.triage(d, Config(), _RULES)
+    art = type("A", (), {"has_lockfile": False, "has_shrinkwrap": False})()
+    out = sandbox._encode_output(art, d, tr)
+    out["diff"]["added_binaries"] = [{"path": 5, "size": 1}]
+    with pytest.raises(sandbox.SandboxError):
+        sandbox._decode_output(json.dumps(out).encode(), Config(), _RULES)

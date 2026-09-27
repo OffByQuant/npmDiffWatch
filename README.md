@@ -37,9 +37,12 @@ scripts first, then what loads when the package is imported, then commands, othe
 the unchanged line that reads each data file). Alongside the code it gets how each file runs, how the release
 was published (provenance, trusted publisher, days since the previous release), the URLs, IPs, secret paths
 and credential variables the added code introduces, and dependency leads. No rule score or rule name reaches
-the model. A **malicious** verdict needs a complete chain in the added code with both ends cited (a secret
-read and then sent, a payload decoded and then run); anything less, or code that runs only as a command, is
-held for a person. A benign verdict on a release whose runnable files did not all fit stays in `pending`.
+the model. A **malicious** verdict needs a complete chain in the added code with both ends quoted exactly from the
+shown code (a secret read and then sent, a payload decoded and then run), in one file or in files that name each
+other, in shipped code, and code rather than a string or comment that mentions it; anything less, code that runs
+only as a command, or code whose run time is unknown, is held for a person. Files that cannot be read as text
+(images, archives, very large files) are fingerprinted, and a change to one is shown to the model with the lines
+that read it. A benign verdict on a release whose runnable files did not all fit stays in `pending`.
 
 Rules no longer decide what the model reviews. A release is cleared without the model only when nothing that
 can run changed, judged by each file's content rather than its name (a file named like documentation that holds

@@ -142,6 +142,12 @@ def extract_tgz(blob: bytes, cfg: Config):
                 data = tar.extractfile(m).read(cfg.max_source_file_bytes + 1)
                 if _is_text(data):
                     files[rel] = data
+                else:       # never dropped unseen: a change to it must still reach the model
+                    binaries.append({"path": rel, "size": m.size, "reason": "unreadable",
+                                     "sha256": hashlib.sha256(data).hexdigest()})
+            else:
+                binaries.append({"path": rel, "size": m.size, "reason": "file-too-large",
+                                 "sha256": _sha256_of(tar.extractfile(m))})
 
     return files, binaries, has_lockfile, has_shrinkwrap
 
