@@ -69,3 +69,13 @@ def test_a_suspicion_with_a_chain_stays_suspicious(tmp_path):
 def test_a_suspicion_on_a_release_seen_whole_stays_suspicious(tmp_path):
     text = "untrusted_content_marker: M\n\nM\n--- file: a.js (added) ---\n+ x\nM"
     assert _run_with(tmp_path, text, _Suspicious()) == "needs_adjudication"
+
+
+def test_a_suspicion_with_a_dependency_lead_stays_suspicious(tmp_path):
+    text = _UNREAD[:-2] + f"\n{reviewer._DEPS_HEADING}\n  lodahs: named like lodash\nM"
+    assert _run_with(tmp_path, text, _Suspicious()) == "needs_adjudication"
+
+
+def test_a_suspicion_with_a_changed_script_stays_suspicious(tmp_path):
+    text = _UNREAD[:-2] + "\n--- package.json changes ---\n  scripts: None -> {\"postinstall\": \"node x.js\"}\nM"
+    assert _run_with(tmp_path, text, _Suspicious()) == "needs_adjudication"
