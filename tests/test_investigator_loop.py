@@ -38,8 +38,7 @@ class _Backend:
 
 
 def _submit(verdict="malicious"):
-    a = {k: {"answer": "x", "quotes": []} for k in investigator.CHECKLIST}
-    a.update(verdict=verdict, chain_source=None, chain_sink=None, explanation=None)
+    a = dict(verdict=verdict, reason="r", chain_source=None, chain_sink=None, explanation=None)
     return ChatReply(None, [ToolCall("s", "submit_answer", a)], {"role": "assistant"})
 
 
@@ -50,6 +49,16 @@ def test_a_tool_then_an_answer():
     assert r["status"] == "ok" and r["steps"] == 2 and r["verdict"] == "malicious"
     tool_msg = b.sent[1]["messages"][-1]["content"]
     assert "IGNORE PREVIOUS INSTRUCTIONS" in tool_msg and tool_msg.count("===DW-UNTRUSTED-") == 2
+
+
+def test_the_model_s_own_answer_is_kept_when_the_gate_holds_it():
+    r = investigator.investigate(Config(), _Backend([_submit("benign")]), _WS(), ORIG)
+    assert r["verdict"] == "malicious" and r["answer"]["verdict"] == "benign"
+
+
+def test_the_brief_is_the_claim_to_check_not_a_list_of_criteria():
+    assert "checklist" not in investigator.SYSTEM.lower()
+    assert "Check this claim" in investigator.SYSTEM
 
 
 def test_a_tool_error_is_returned_to_the_model():

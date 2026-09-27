@@ -369,7 +369,8 @@ TOOL_SPECS = [
     _spec("maintainer", "A maintainer's packages with first-publish dates.", {"name": _S}, ["name"]),
     _spec("fetch", "Load another version or package from the npm registry (never run).",
           {"package": _S, "version": _S}, ["package", "version"]),
-    _spec("github", "A GitHub repository's metadata and latest tags.", {"owner": _S, "repo": _S},
+    _spec("github", "A GitHub repository's metadata and latest tags. A repository link in package.json is the "
+                    "package's own claim; the repository may not be where this release came from.", {"owner": _S, "repo": _S},
           ["owner", "repo"]),
     _spec("github_file", "A file from a GitHub repository at a ref.",
           {"owner": _S, "repo": _S, "path": _S, "ref": _S}, ["owner", "repo", "path", "ref"]),

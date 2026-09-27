@@ -5,26 +5,20 @@ from dataclasses import dataclass, field
 
 from . import reviewer
 
-CHECKLIST = ("runs_at_install", "runs_on_import", "original_chain", "other_chain", "history",
-             "purpose_consistency")
 _QUOTE = {"type": ["object", "null"], "properties": {
     "version": {"type": "string"}, "path": {"type": "string"}, "code": {"type": "string"}},
     "required": ["version", "path", "code"]}
-_ITEM = {"type": "object", "properties": {"answer": {"type": "string"},
-                                          "quotes": {"type": "array", "items": _QUOTE}},
-         "required": ["answer", "quotes"]}
 ANSWER_SCHEMA = {
     "type": "object",
-    "properties": {**{k: _ITEM for k in CHECKLIST},
-                   "verdict": {"type": "string", "enum": ["malicious", "suspicious", "benign"]},
+    "properties": {"verdict": {"type": "string", "enum": ["malicious", "suspicious", "benign"]},
                    "confidence": {"type": "number", "default": 0.0},
-                   "reason": {"type": "string", "default": ""},
+                   "reason": {"type": "string"},
                    "chain_source": _QUOTE, "chain_sink": _QUOTE, "explanation": _QUOTE,
                    "indicators": {"type": "array", "items": {"type": "string"}, "default": []}},
-    "required": list(CHECKLIST) + ["verdict", "chain_source", "chain_sink", "explanation"],
+    "required": ["verdict", "reason", "chain_source", "chain_sink", "explanation"],
 }
 SUBMIT_SPEC = {"name": "submit_answer",
-               "description": "Submit the finished investigation. Call once, when every checklist item is answered.",
+               "description": "Submit the finished investigation. Call once, at the end.",
                "parameters": ANSWER_SCHEMA}
 
 

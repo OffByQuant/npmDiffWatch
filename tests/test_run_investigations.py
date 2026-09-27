@@ -22,7 +22,7 @@ class _Inv:
     def __call__(self, cfg, backend, ws, original, clock=None):
         self.seen.append(original["version"])
         return {"status": "ok", "verdict": "malicious", "outcome": self.outcome, "confidence": 1.0,
-                "checklist": {}, "reason": "r", "indicators": ["1.2.3.4"], "gate_notes": [], "facts": [],
+                "answer": {"verdict": "malicious"}, "reason": "r", "indicators": ["1.2.3.4"], "gate_notes": [], "facts": [],
                 "steps": 3, "tools": [], "seconds": 1.0, "error": None}
 
 
@@ -69,7 +69,7 @@ def test_a_failed_run_is_retried_next_time(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path); conn = store.connect(cfg); store.init_schema(conn)
     rid = _flag(cfg, conn, "1.0.0")
     fail = lambda *a, **k: {"status": "failed", "error": "down", "facts": [], "tools": [], "steps": 1,  # noqa: E731
-                            "seconds": 0.1, "verdict": None, "outcome": None, "confidence": None, "checklist": {},
+                            "seconds": 0.1, "verdict": None, "outcome": None, "confidence": None, "answer": {"verdict": "malicious"},
                             "reason": "", "indicators": [], "gate_notes": []}
     _run(cfg, monkeypatch, fail)
     inv = _Inv(); _run(cfg, monkeypatch, inv)

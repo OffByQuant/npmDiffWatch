@@ -32,7 +32,7 @@ CREATE TABLE IF NOT EXISTS reviewer_stats(endpoint TEXT, model TEXT, tok_s REAL,
 CREATE TABLE IF NOT EXISTS flagged_packages(release_id INTEGER PRIMARY KEY, package TEXT, version TEXT,
   prior_version TEXT, new_path TEXT, prior_path TEXT, bytes INTEGER, stored_at TEXT);
 CREATE TABLE IF NOT EXISTS investigations(id INTEGER PRIMARY KEY, release_id INTEGER, model TEXT,
-  created_at TEXT, status TEXT, verdict TEXT, outcome TEXT, confidence REAL, checklist_json TEXT, reason TEXT,
+  created_at TEXT, status TEXT, verdict TEXT, outcome TEXT, confidence REAL, answer_json TEXT, reason TEXT,
   indicators_json TEXT, gate_notes TEXT, facts_json TEXT, steps INTEGER, tools_json TEXT, seconds REAL);
 CREATE INDEX IF NOT EXISTS ix_inv_release ON investigations(release_id);
 """
@@ -433,10 +433,10 @@ def flagged_delete(conn, rid):
 
 def add_investigation(conn, rid, model, r: dict):
     conn.execute("""INSERT INTO investigations(release_id, model, created_at, status, verdict, outcome, confidence,
-                    checklist_json, reason, indicators_json, gate_notes, facts_json, steps, tools_json, seconds)
+                    answer_json, reason, indicators_json, gate_notes, facts_json, steps, tools_json, seconds)
                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                  (rid, model, _now(), r.get("status"), r.get("verdict"), r.get("outcome"), r.get("confidence"),
-                  json.dumps(r.get("checklist") or {}), r.get("reason") or r.get("error") or "",
+                  json.dumps(r.get("answer") or {}), r.get("reason") or r.get("error") or "",
                   json.dumps(r.get("indicators") or []), json.dumps(r.get("gate_notes") or []),
                   json.dumps(r.get("facts") or []), r.get("steps"), json.dumps(r.get("tools") or []),
                   r.get("seconds")))

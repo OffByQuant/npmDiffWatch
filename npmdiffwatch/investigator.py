@@ -1,37 +1,23 @@
-"""The investigation loop: the model calls tools until it submits a checklist answer, within step and time
+"""The investigation loop: the model calls tools until it submits an answer, within step and time
 limits. Every tool result is untrusted package content between random markers. The gate decides the outcome."""
 import time
 
 from . import investigate_gate as gate
 from . import reviewer
 from .backends import ReviewUnavailable, validate_verdict
-from .investigate_gate import CHECKLIST  # noqa: F401  re-exported for tests
 from .investigate_tools import TOOL_SPECS, ToolError
 
 SYSTEM = (reviewer._SECURITY + """
 
-You are DiffWatch's investigator. A first review called this npm release malicious. Establish, with the
-tools, whether that holds. Nothing you do runs package code; every tool only reads.
-
-Work through the checklist and answer each item with exact quotes of code (version "flagged" unless the item
-is about another version):
-- runs_at_install: call scripts("flagged"); read every file an install script runs, whole.
-- runs_on_import: read every entry point (main, exports) whole; bin files too.
-- original_chain: is the first review's chain real, and does the code containing it actually run? A file that
-  nothing runs is not a chain.
-- other_chain: what else does the code that runs actually do to the user, their machine or their network,
-  beyond what the package says it does? Describe it and quote it.
-- history: versions() and maintainer(): what changed and when; who published; first publish seen. npm does not
-  publish account ages.
-- purpose_consistency: does that behaviour have a plausible, documented relationship to what the package
-  says it does?
-A repository link in package.json is a claim, not proof: count it only when several facts agree (name in the
-repository's own manifest, tag timing, file similarity, version, provenance).
+You are DiffWatch's investigator. A first review called this npm release malicious. Check this claim against
+the package: use the tools to look at whatever you need (its files, its scripts, earlier versions, its
+maintainer's other packages, its repository) and decide whether the claim holds. Nothing you do runs package
+code; every tool only reads.
 
 Decode with the decode tool; never decode in your head. Never try to contact a URL from the package.
-Decide the verdict yourself from what you found.
-Finish with submit_answer: verdict, chain_source and chain_sink (exact code, flagged version) for malicious;
-for suspicious or benign, an explanation quote showing why the original chain is not what it seemed.""")
+Finish with submit_answer: your verdict and the reason for it. For malicious, chain_source and chain_sink are the
+exact code (version "flagged") where it starts and where it does harm. For suspicious or benign, explanation is
+the exact code (version "flagged") that shows why the claim is not what it seemed.""")
 
 
 def _case(original: dict, marker: str) -> str:
@@ -54,7 +40,7 @@ def investigate(cfg, backend, ws, original: dict, *, clock=time.monotonic) -> di
     tools = TOOL_SPECS + [gate.SUBMIT_SPEC]
     messages = [backend.user_message(_case(original, marker))]
     steps, retries = 0, 0
-    result = {"status": "failed", "verdict": None, "outcome": None, "confidence": None, "checklist": {},
+    result = {"status": "failed", "verdict": None, "outcome": None, "confidence": None, "answer": {},
               "reason": "", "indicators": [], "gate_notes": [], "facts": ws.facts, "steps": 0, "tools": ws.log,
               "seconds": 0.0, "error": None}
 
@@ -80,7 +66,7 @@ def investigate(cfg, backend, ws, original: dict, *, clock=time.monotonic) -> di
             return done(error=str(e))
         messages.append(reply.assistant)
         if not reply.calls:
-            messages.append(backend.user_message("Call a tool, or submit_answer when the checklist is complete."))
+            messages.append(backend.user_message("Call a tool, or submit_answer when you have decided."))
             continue
         results = []
         for call in reply.calls:
@@ -96,7 +82,7 @@ def investigate(cfg, backend, ws, original: dict, *, clock=time.monotonic) -> di
                 o = gate.judge(answer, ws)
                 return done(status="ok", verdict=o.verdict, outcome=o.outcome,
                             confidence=answer.get("confidence"),
-                            checklist={k: answer.get(k) for k in gate.CHECKLIST}, reason=answer.get("reason", ""),
+                            answer=answer, reason=answer.get("reason", ""),
                             indicators=answer.get("indicators") or [],
                             gate_notes=o.notes + [f"{o.rejected_quotes} quote(s) rejected"])
             if call.error is not None:

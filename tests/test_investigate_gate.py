@@ -27,8 +27,7 @@ def _q(path, code): return {"version": "flagged", "path": path, "code": code}
 
 
 def _answer(verdict, **kw):
-    a = {k: {"answer": "x", "quotes": []} for k in g.CHECKLIST}
-    a.update(verdict=verdict, confidence=0.9, reason="r", indicators=[], chain_source=None, chain_sink=None,
+    a = dict(verdict=verdict, confidence=0.9, reason="r", indicators=[], chain_source=None, chain_sink=None,
              explanation=None)
     a.update(kw)
     return a
@@ -98,8 +97,10 @@ def test_an_injection_attempt_makes_it_contested():
     assert (o.verdict, o.outcome) == ("malicious", "contested")     # an injection attempt never clears anything
 
 
-def test_the_schema_requires_the_purpose_question():
-    assert "purpose_consistency" in g.ANSWER_SCHEMA["required"]
+def test_the_answer_is_a_verdict_a_reason_and_its_evidence_with_no_checklist():
+    assert set(g.ANSWER_SCHEMA["required"]) == {"verdict", "reason", "chain_source", "chain_sink", "explanation"}
+    assert set(g.ANSWER_SCHEMA["properties"]) == {"verdict", "confidence", "reason", "chain_source", "chain_sink",
+                                                   "explanation", "indicators"}
 
 
 def test_an_install_command_quoted_as_written_matches_its_json_escaped_file():
