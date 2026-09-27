@@ -1,5 +1,6 @@
 """The model's answer is recorded only with evidence that exists: a malicious verdict needs both ends of the chain
 quoted from the flagged version, anything below it a quoted explanation, or the original verdict stands."""
+import re
 from dataclasses import dataclass, field
 
 from . import reviewer
@@ -29,6 +30,24 @@ class Outcome:
     rejected_quotes: int = 0
 
 
+_ELISION = re.compile(r"/\*\s*(?:\.\.\.|…)\s*\*/|\.\.\.|…")
+_ADDED_COMMENT = re.compile(r"(?:^|\s)//\s.*$")
+
+
+def _pieces(raw: str, text: str) -> list[str]:
+    """The quoted code in order: an elision ("...", "/* ... */") marks code left out, and a // comment that is not
+    in the file is the model's own note, not a quote."""
+    out = []
+    for line in raw.strip().strip("`").splitlines():
+        for piece in _ELISION.split(line):
+            piece = reviewer._norm(piece)
+            if piece and piece not in text:
+                piece = reviewer._norm(_ADDED_COMMENT.sub("", piece))
+            if piece:
+                out.append(piece)
+    return out
+
+
 def _quote_ok(q, ws, notes, *, code_only=False) -> bool:
     """A quote counts only if it is from the flagged version, in a file the agent read, with its lines in order."""
     if not isinstance(q, dict) or q.get("version") != "flagged":
@@ -39,12 +58,13 @@ def _quote_ok(q, ws, notes, *, code_only=False) -> bool:
     if seen is None:
         notes.append(f"a quote is from {path!r}, which the investigation did not read")
         return False
-    lines = [ln for ln in (reviewer._norm(x) for x in raw.strip().strip("`").splitlines()) if ln]
     texts = [reviewer._norm(seen)]
     if str(path).endswith(".json"):      # JSON strings are escaped in the file; a command is quoted as written
         texts.append(reviewer._norm(reviewer._JSON_ESCAPE.sub(r"\1", seen)))
-    if not any(len(ln.replace(" ", "")) >= reviewer._MIN_QUOTE for ln in lines) or \
-            not any(reviewer._in_order(lines, t) for t in texts):
+    def matches(t):
+        ls = _pieces(raw, t)
+        return any(len(ln.replace(" ", "")) >= reviewer._MIN_QUOTE for ln in ls) and reviewer._in_order(ls, t)
+    if not any(matches(t) for t in texts):
         notes.append(f"a quote is not in {path} as read")
         return False
     if code_only and str(path).endswith(reviewer._CODE_EXT) and reviewer._only_text(reviewer._norm(raw)):
