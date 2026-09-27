@@ -19,17 +19,17 @@ is about another version):
 - runs_on_import: read every entry point (main, exports) whole; bin files too.
 - original_chain: is the first review's chain real, and does the code containing it actually run? A file that
   nothing runs is not a chain.
-- other_chain: any other complete chain: secrets read and sent off the machine, a payload fetched or decoded
-  and run, spreading, destruction.
+- other_chain: what else does the code that runs actually do to the user, their machine or their network,
+  beyond what the package says it does? Describe it and quote it.
 - history: versions() and maintainer(): what changed and when; who published; first publish seen. npm does not
   publish account ages.
-- purpose_consistency: does the suspicious behaviour have a plausible, documented relationship to what the
-  package says it does? Purpose never excuses sending secrets off the machine or running a fetched payload
-  unrelated to that purpose.
+- purpose_consistency: does that behaviour have a plausible, documented relationship to what the package
+  says it does?
 A repository link in package.json is a claim, not proof: count it only when several facts agree (name in the
 repository's own manifest, tag timing, file similarity, version, provenance).
 
 Decode with the decode tool; never decode in your head. Never try to contact a URL from the package.
+Decide the verdict yourself from what you found.
 Finish with submit_answer: verdict, chain_source and chain_sink (exact code, flagged version) for malicious;
 for suspicious or benign, an explanation quote showing why the original chain is not what it seemed.""")
 
