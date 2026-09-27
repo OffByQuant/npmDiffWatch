@@ -49,3 +49,13 @@ def test_make_investigator_backend_uses_the_investigator_block():
     inv = dataclasses.replace(Config().investigator, base_url="http://x/v1", model="big")
     b = backends.make_investigator_backend(dataclasses.replace(Config(), investigator=inv))
     assert b.endpoint == "http://x/v1" and b.primary_model == "big"
+
+
+def test_a_malformed_tool_call_is_replayed_with_empty_arguments():
+    """llama.cpp re-parses replayed arguments as JSON and fails the whole request (HTTP 500) on bad ones."""
+    def post(url, payload, timeout, headers):
+        return {"choices": [{"message": {"role": "assistant", "content": None, "tool_calls": [
+            {"id": "c1", "type": "function", "function": {"name": "read", "arguments": "{not json"}}]}}]}
+    b = backends.OpenAICompatibleBackend("http://h/v1", "m", post=post)
+    r = b.chat(model="m", system="s", messages=[b.user_message("hi")], tools=TOOLS, max_tokens=10)
+    assert r.calls[0].error and r.assistant["tool_calls"][0]["function"]["arguments"] == "{}"

@@ -215,7 +215,10 @@ class OpenAICompatibleBackend:
             calls.append(ToolCall(tc.get("id") or f"call{len(calls)}", fn.get("name") or "", a, err))
         assistant = {"role": "assistant", "content": msg.get("content")}
         if msg.get("tool_calls"):
-            assistant["tool_calls"] = msg["tool_calls"]
+            # Replayed as sent, except arguments that are not JSON: servers re-parse them and fail the request.
+            assistant["tool_calls"] = [
+                {**tc, "function": {**(tc.get("function") or {}), "arguments": "{}"}} if c.error else tc
+                for tc, c in zip(msg["tool_calls"], calls)]
         return ChatReply(msg.get("content") if isinstance(msg.get("content"), str) else None, calls, assistant)
 
     def ping(self, user_text, *, timeout) -> dict | None:
