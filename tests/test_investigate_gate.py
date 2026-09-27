@@ -53,17 +53,17 @@ def test_a_downgrade_with_coverage_and_an_explanation_is_disputed():
     assert (o.verdict, o.outcome) == ("benign", "disputed")
 
 
-def test_injected_downgrade_without_coverage_is_inconclusive():
+def test_a_quoted_downgrade_stands_without_reading_every_file():
     o = g.judge(_answer("suspicious", explanation=_q("index.js", "module.exports = function add(a, b)")),
                 _WS(FILES, [("flagged", "index.js")]))
-    assert (o.verdict, o.outcome) == ("malicious", "inconclusive")
-    assert any("setup.js" in n for n in o.notes)
+    assert (o.verdict, o.outcome) == ("suspicious", "disputed")
+    assert any("setup.js" in n for n in o.notes)                    # what it did not read is noted for the reader
 
 
-def test_a_downgrade_without_looking_at_the_scripts_is_inconclusive():
+def test_a_quoted_downgrade_stands_without_the_scripts_tool():
     o = g.judge(_answer("benign", explanation=_q("index.js", "module.exports = function add(a, b)")),
                 _WS(FILES, ALL, scripts=False))
-    assert o.outcome == "inconclusive"
+    assert o.outcome == "disputed"
 
 
 def test_a_downgrade_without_an_explanation_quote_is_inconclusive():
@@ -71,10 +71,10 @@ def test_a_downgrade_without_an_explanation_quote_is_inconclusive():
     assert (o.verdict, o.outcome) == ("malicious", "inconclusive")
 
 
-def test_a_too_large_entry_point_keeps_it_malicious():
+def test_a_too_large_entry_point_is_noted_but_does_not_block_a_downgrade():
     o = g.judge(_answer("benign", explanation=_q("index.js", "module.exports = function add(a, b)")),
                 _WS(FILES, ALL, too_large=["dist/big.js"]))
-    assert (o.verdict, o.outcome) == ("malicious", "inconclusive")
+    assert (o.verdict, o.outcome) == ("benign", "disputed")
     assert any("too large" in n for n in o.notes)
 
 
@@ -91,10 +91,11 @@ def test_a_quote_from_a_file_it_did_not_read_is_rejected():
     assert o.outcome == "inconclusive"
 
 
-def test_an_injection_attempt_makes_it_contested():
+def test_text_addressing_the_reviewer_is_a_note_not_an_override():
     o = g.judge(_answer("benign", explanation=_q("index.js", "module.exports = function add(a, b)")),
                 _WS(FILES, ALL, facts=["index.js contains text that addresses the reviewer (possible injection)"]))
-    assert (o.verdict, o.outcome) == ("malicious", "contested")     # an injection attempt never clears anything
+    assert (o.verdict, o.outcome) == ("benign", "disputed")
+    assert any("addresses the reviewer" in n for n in o.notes)
 
 
 def test_the_answer_is_a_verdict_a_reason_and_its_evidence_with_no_checklist():

@@ -33,7 +33,7 @@ class InvestigatorConfig:
     base_url: str = "http://localhost:8080/v1"
     model: str = "local-model"
     api_key_env: str | None = None
-    max_steps: int = 15
+    max_steps: int = 30
     timeout_s: float = 1800.0          # per investigation
     max_output_tokens: int = 4096      # per model turn
     max_download_mb: int = 50          # per investigation, across every fetch

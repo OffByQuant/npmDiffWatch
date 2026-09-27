@@ -181,10 +181,10 @@ It never runs package code, never contacts a host named in a package, and reache
 GitHub's API and your model endpoint (`allow_hosts`, `also_allow`). A repository link is treated as a claim,
 not proof.
 
-Its answer is checked in code before it counts. To call a release anything less than malicious it must have read
-every install script target and entry point in full and quote why the first review's chain is not what it
-seemed; otherwise the original stands as *inconclusive*. Text in a package that tries to talk to the reviewer is
-recorded against it (*contested*). The result is added beside the original verdict on the dashboard; nothing is
+It is given the first review's claim and decides for itself, but its evidence is checked in code before it
+counts: a malicious verdict must quote both ends of the chain from the flagged release, and anything less must
+quote the code that shows why the claim is not what it seemed; otherwise the original stands as *inconclusive*.
+Files it did not read and text in a package that tries to talk to the reviewer are noted on the record. The result is added beside the original verdict on the dashboard; nothing is
 overwritten, reported or deleted for you. When it stays malicious, use the report button.
 
 To keep the evidence after npm removes a package, the scanner stores the tarballs of releases flagged malicious

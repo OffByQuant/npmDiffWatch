@@ -1,6 +1,5 @@
-"""Code, not the model, decides what an investigation's answer is allowed to change. The original verdict is
-malicious; anything below it needs every runnable path examined and a quoted explanation, from the flagged
-version's own files, or the original stands."""
+"""The model's answer is recorded only with evidence that exists: a malicious verdict needs both ends of the chain
+quoted from the flagged version, anything below it a quoted explanation, or the original verdict stands."""
 from dataclasses import dataclass, field
 
 from . import reviewer
@@ -55,11 +54,11 @@ def _quote_ok(q, ws, notes, *, code_only=False) -> bool:
 
 
 def judge(answer: dict, ws) -> Outcome:
-    notes: list[str] = []
+    """The model decides; its evidence must exist. What it did not examine, and any text addressing the reviewer,
+    is noted for the person reading the record."""
+    notes = [f for f in ws.facts if "addresses the reviewer" in f]
     rejected = 0
-    verdict = answer.get("verdict")
-    injected = any("addresses the reviewer" in f for f in ws.facts)
-    if verdict == "malicious":
+    if answer.get("verdict") == "malicious":
         ok = True
         for end in ("chain_source", "chain_sink"):
             if not _quote_ok(answer.get(end), ws, notes, code_only=True):
@@ -71,23 +70,16 @@ def judge(answer: dict, ws) -> Outcome:
                                or reviewer._names(files.get(k, b"").decode("utf-8", "replace"), s)):
                 ok = False
                 notes.append("source and sink are not in the same file or in files that name each other")
-        return Outcome("malicious", "contested" if injected else "confirmed" if ok else "inconclusive", notes,
-                       rejected)
-    # Anything below malicious: coverage, then an explanation.
-    covered = True
+        return Outcome("malicious", "confirmed" if ok else "inconclusive", notes, rejected)
     if "flagged" not in ws.scripts_seen:
-        covered = False; notes.append("the install scripts were not examined")
+        notes.append("the install scripts tool was not used")
     for p in ws.required_files():
         if ("flagged", p) not in ws.read_full and p not in ws.too_large():
-            covered = False; notes.append(f"{p} runs but was not read in full")
+            notes.append(f"{p} runs but was not read in full")
     for p in ws.too_large():
-        covered = False; notes.append(f"{p} runs and is too large to examine in full")
-    explained = _quote_ok(answer.get("explanation"), ws, notes)
-    rejected += 0 if explained or answer.get("explanation") is None else 1
-    if not explained:
+        notes.append(f"{p} runs and is too large to examine in full")
+    if not _quote_ok(answer.get("explanation"), ws, notes):
+        rejected += 0 if answer.get("explanation") is None else 1
         notes.append("no quoted explanation of the original chain")
-    if not (covered and explained):
-        return Outcome("malicious", "contested" if injected else "inconclusive", notes, rejected)
-    if injected:            # an injection attempt never clears anything
-        return Outcome("malicious", "contested", notes, rejected)
-    return Outcome(verdict, "disputed", notes, rejected)
+        return Outcome("malicious", "inconclusive", notes, rejected)
+    return Outcome(answer["verdict"], "disputed", notes, rejected)

@@ -178,7 +178,7 @@ h1{font-size:24px;letter-spacing:-.3px}.sub{color:var(--muted);margin:6px 0 28px
 .inv{margin-top:6px;font-size:13px}
 .inv.confirmed{color:var(--red)}
 .inv.disputed{color:var(--amber, #b7791f)}
-.inv.contested{color:var(--red);font-weight:600}
+
 .inv.failed{opacity:.7}
 .inv-ind{font-size:12px;opacity:.85}
 .btn.view{color:#58a6ff}

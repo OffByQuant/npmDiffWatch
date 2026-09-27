@@ -22,11 +22,6 @@ def test_disputed_card_keeps_report_button():
     assert "Investigated: benign — was malicious (disputed)" in html and "Report malware on npm" in html
 
 
-def test_contested_is_shown():
-    html = dashboard.render_dashboard([_row(inv_status="ok", inv_outcome="contested", inv_verdict="malicious")])
-    assert "contested" in html
-
-
 def test_failed_runs_are_a_count_not_a_verdict():
     html = dashboard.render_dashboard([_row(inv_failed=2)])
     assert "2 investigation attempt(s) failed" in html and "Investigated:" not in html

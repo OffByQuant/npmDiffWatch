@@ -4,6 +4,10 @@ from npmdiffwatch import egress, sandbox
 from npmdiffwatch.config import Config, load_config
 
 
+def test_the_step_limit_defaults_to_30():
+    assert Config().investigator.max_steps == 30
+
+
 def test_investigator_is_off_by_default():
     assert Config().investigator.enabled is False
 
