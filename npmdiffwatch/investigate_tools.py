@@ -212,6 +212,8 @@ class Workspace:
         scripts = execclass._manifest(files).get("scripts")
         scripts = scripts if isinstance(scripts, dict) else {}
         self.scripts_seen.add(version)
+        if "package.json" in files:      # the real file, so an install command can be quoted from it
+            self._seen(version, "package.json", files["package.json"].decode("utf-8", errors="replace"))
         out = []
         for hook in _HOOKS:
             cmd = scripts.get(hook)

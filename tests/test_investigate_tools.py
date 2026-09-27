@@ -170,7 +170,8 @@ def test_a_diff_is_not_recorded_as_flagged_file_content():
 def test_the_scripts_summary_is_not_recorded_as_package_json():
     ws = _ws()
     ws.call("scripts", {"version": "flagged"})
-    assert ("flagged", "package.json") not in ws.read_text
+    assert "runs:" in ws.read_text[("scripts", "flagged")]
+    assert "runs:" not in ws.read_text[("flagged", "package.json")]      # only the real file is quotable
 
 
 def test_a_non_numeric_line_is_a_tool_error():
@@ -190,3 +191,9 @@ def test_odd_registry_metadata_is_a_tool_error():
     http = _Http({"https://registry.npmjs.org/p": {"versions": {"1.0.0": "not an object"}}})
     with pytest.raises(it.ToolError):
         _ws(http).call("versions", {"package": "p"})
+
+
+def test_scripts_records_the_real_package_json_so_install_commands_are_quotable():
+    ws = _ws()
+    ws.call("scripts", {"version": "flagged"})
+    assert ws.read_text[("flagged", "package.json")].strip() == PJ
