@@ -61,10 +61,19 @@ def _review_slot(cfg):
     return f
 
 
-def _record(cfg, conn, rid, verdict, score, partial=False):
+def _partial_suspicion(verdict, text) -> bool:
+    """Suspicious with no chain cited, on a release the model could not see whole: the suspicion is about what it
+    could not see. It goes to the "couldn't see everything" queue, not among the suspicions with a lead."""
+    return (verdict.classification == "suspicious" and not (verdict.chain_source or verdict.chain_sink)
+            and reviewer.saw_part(text))
+
+
+def _record(cfg, conn, rid, verdict, score, partial=False, partial_suspicion=False):
     store.clear_pending(conn, rid)
     store.record_verdict(conn, rid, verdict)
-    if verdict.classification == "benign":
+    if partial_suspicion:
+        store.update_stage(conn, rid, "reviewed_partial", score, None)
+    elif verdict.classification == "benign":
         if partial:     # the model could not see every runnable file: reviewed, not cleared
             store.update_stage(conn, rid, "reviewed_partial", score, None)
             return
@@ -107,7 +116,8 @@ def _attempt_review(cfg, conn, rvw, rid, package, version, score, fired_rules, t
         # prompt_tokens cover the system prompt as well as the package content, so the chars must too.
         guard.record_success(getattr(rvw.backend, "last_usage", None), time.monotonic() - t0,
                              len(reviewer.SYSTEM_PROMPT) + len(text))
-    _record(cfg, conn, rid, verdict, score, partial=reviewer.has_unshown_runnable(text))
+    _record(cfg, conn, rid, verdict, score, partial=reviewer.has_unshown_runnable(text),
+            partial_suspicion=_partial_suspicion(verdict, text))
     return True
 
 
@@ -193,7 +203,9 @@ def evaluate_release(cfg, dl, ruleset, rvw, backend) -> dict:
     return {"tier": "full", "verdict": v.classification, "cited_hunk": v.cited_hunk, "confidence": v.confidence,
             "attack_type": v.attack_type, "reasoning": v.reasoning, "input_chars": len(text),
             "files_shown": text.count("--- file: "), "files_omitted": omitted, "runs_when": v.runs_when,
-            "chain_source": v.chain_source, "chain_sink": v.chain_sink}
+            "chain_source": v.chain_source, "chain_sink": v.chain_sink,
+            "partial": _partial_suspicion(v, text) or (v.classification == "benign"
+                                                       and reviewer.has_unshown_runnable(text))}
 
 
 def _rebuild_review_input(cfg, conn, rvw, row, ruleset, cap):

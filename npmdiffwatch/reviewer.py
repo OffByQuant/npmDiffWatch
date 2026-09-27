@@ -332,6 +332,11 @@ def has_unshown_runnable(review_input: str) -> bool:
     return any(f"({c}," in block for c in _RUNNABLE)
 
 
+def saw_part(review_input: str) -> bool:
+    """The model could not see all of it: a runnable file did not fit, or a changed file cannot be read as text."""
+    return has_unshown_runnable(review_input) or _UNREAD_HEADING in review_input
+
+
 def build_evidence(diff, triage, *, max_chars: int) -> str:
     flagged = {r.file for r in triage.fired_rules if r.lines != (0, 0)}
     by_path = {fd.path: fd for fd in diff.changed if fd.path in flagged}
