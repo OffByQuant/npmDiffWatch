@@ -9,7 +9,9 @@ import time
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 
-from . import ingest, fetcher, differ, engine, rules, notifier, store, reviewer, egress, dashboard, sandbox, routing, flagged
+from . import ingest, fetcher, differ, engine, rules, notifier, store, reviewer, egress, dashboard, sandbox, routing, flagged, investigator
+from .backends import make_investigator_backend
+from .investigate_tools import Workspace
 from . import guard as guard_mod
 from . import watchlist as watchlist_mod
 from .config import Config
@@ -905,3 +907,40 @@ def adjudicate(cfg: Config, release_id: int, label: str, note: str = ""):
         return {"package": rel["package"], "version": rel["version"], "label": label, "alerted": alerted}
     finally:
         conn.close()
+
+
+def run_investigations(cfg, only=None, *, backend=None, workspace=None, clock=time.monotonic) -> list[dict]:
+    """Investigate every release flagged malicious that has no successful investigation (or the one named).
+    Appends a row per run; never changes the verdict. The user reports; nothing is reported from here."""
+    if backend is None:           # a real run: this process may reach only the investigator's allowlist
+        egress.install_guard(cfg, hosts=egress.investigator_hosts(cfg))
+        backend = make_investigator_backend(cfg)
+    model = getattr(backend, "primary_model", "?")
+    workspace = workspace or (lambda c, dl: Workspace(c, dl))
+    conn = store.connect(cfg); store.init_schema(conn)
+    out = []
+    try:
+        flagged.prune(cfg, conn)
+        for row in store.to_investigate(conn, only):
+            rid = row["release_id"]
+            dl = flagged.load(cfg, conn, rid)
+            if dl is None:
+                store.add_investigation(conn, rid, model,
+                                        {"status": "partial", "error": "package not stored or no longer readable"})
+                out.append({"package": row["package"], "version": row["version"], "status": "partial"})
+                continue
+            original = {"package": row["package"], "version": row["version"], "prior_version": dl.prior_version,
+                        "reasoning": row["reasoning"], "chain_source": row["chain_source"],
+                        "chain_sink": row["chain_sink"], "cited_hunk": row["cited_hunk"]}
+            try:
+                ws = workspace(cfg, dl)
+                r = investigator.investigate(cfg, backend, ws, original, clock=clock)
+            except Exception as e:           # one release's failure never stops the run
+                logger.exception("investigation failed for %s==%s", row["package"], row["version"])
+                r = {"status": "failed", "error": f"{type(e).__name__}: {e}"}
+            store.add_investigation(conn, rid, model, r)
+            out.append({"package": row["package"], "version": row["version"], "status": r.get("status"),
+                        "outcome": r.get("outcome"), "verdict": r.get("verdict")})
+    finally:
+        conn.close()
+    return out

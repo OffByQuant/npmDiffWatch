@@ -4,7 +4,7 @@ import sys
 from . import egress, store
 from .config import Config, load_config
 from .orchestrator import (run_once, seed_now, list_pending, adjudicate, get_evidence,
-                           backfill_evidence, export_dashboard, watch, review_pending,
+                           backfill_evidence, export_dashboard, watch, review_pending, run_investigations,
                            pending_review_counts, queued_releases, prune, guard_status, feed_retry_counts)
 from .guard import describe
 
@@ -94,6 +94,10 @@ def main():
     adjp.add_argument("release_id", type=int)
     adjp.add_argument("label", choices=["benign", "malicious", "suspicious"])
     adjp.add_argument("--note", default="")
+    invp = sub.add_parser("investigate", help="investigate releases flagged malicious with the [investigator] model")
+    invp.add_argument("release", nargs="?", help="one release as package@version (default: every uninvestigated one)")
+    ilp = sub.add_parser("investigations", help="list investigation results")
+    ilp.add_argument("--limit", type=int, default=50)
     evp = sub.add_parser("evidence", help="print the stored flagged payload code for a release")
     evp.add_argument("release_id", type=int)
     capp = sub.add_parser("capture-evidence",
@@ -189,6 +193,28 @@ def main():
             else:
                 print(f"  (diff unavailable: {it['fetch_error']})")
             print()
+    elif args.cmd == "investigate":
+        cfg = _cfg(args)
+        if not cfg.investigator.enabled:
+            print("[npmdiffwatch] the investigator is off: add [investigator] enabled = true to the config"); sys.exit(2)
+        only = None
+        if args.release:
+            name, _, ver = args.release.rpartition("@")
+            if not name or not ver:
+                print("[npmdiffwatch] give the release as package@version"); sys.exit(2)
+            only = (name, ver)
+        for r in run_investigations(cfg, only):
+            print(f"{r['package']}@{r['version']}: {r['status']}"
+                  + (f" — {r['outcome']} ({r['verdict']})" if r.get("outcome") else ""))
+    elif args.cmd == "investigations":
+        cfg = _cfg(args)
+        conn = store.connect(cfg); store.init_schema(conn)
+        for row in conn.execute("""SELECT r.package, r.version, i.created_at, i.status, i.outcome, i.verdict, i.reason
+                                   FROM investigations i JOIN releases r ON r.id=i.release_id
+                                   ORDER BY i.id DESC LIMIT ?""", (args.limit,)):
+            print(f"{row['created_at'][:19]}  {row['package']}@{row['version']}  {row['status']}  "
+                  f"{row['outcome'] or ''} {row['verdict'] or ''}  {(row['reason'] or '')[:120]}")
+        conn.close()
     elif args.cmd == "evidence":
         ev = get_evidence(cfg, args.release_id)
         if ev is None:

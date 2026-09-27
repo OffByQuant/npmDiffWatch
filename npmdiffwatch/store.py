@@ -423,3 +423,40 @@ def flagged_all(conn):
 
 def flagged_delete(conn, rid):
     conn.execute("DELETE FROM flagged_packages WHERE release_id=?", (rid,)); conn.commit()
+
+def add_investigation(conn, rid, model, r: dict):
+    conn.execute("""INSERT INTO investigations(release_id, model, created_at, status, verdict, outcome, confidence,
+                    checklist_json, reason, indicators_json, gate_notes, facts_json, steps, tools_json, seconds)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                 (rid, model, _now(), r.get("status"), r.get("verdict"), r.get("outcome"), r.get("confidence"),
+                  json.dumps(r.get("checklist") or {}), r.get("reason") or r.get("error") or "",
+                  json.dumps(r.get("indicators") or []), json.dumps(r.get("gate_notes") or []),
+                  json.dumps(r.get("facts") or []), r.get("steps"), json.dumps(r.get("tools") or []),
+                  r.get("seconds")))
+    conn.commit()
+
+def investigations_for(conn, rid):
+    return conn.execute("SELECT * FROM investigations WHERE release_id=? ORDER BY id", (rid,)).fetchall()
+
+def latest_investigation(conn, rid):
+    return conn.execute("SELECT * FROM investigations WHERE release_id=? AND status='ok' ORDER BY id DESC LIMIT 1",
+                        (rid,)).fetchone()
+
+def failed_investigations(conn, rid) -> int:
+    return conn.execute("SELECT COUNT(*) FROM investigations WHERE release_id=? AND status!='ok'",
+                        (rid,)).fetchone()[0]
+
+def to_investigate(conn, only=None):
+    if only:
+        return conn.execute("""SELECT r.id AS release_id, r.package, r.version, v.reasoning, v.cited_hunk,
+                                      v.chain_source, v.chain_sink
+                               FROM releases r JOIN verdicts v ON v.release_id=r.id
+                               WHERE r.package=? AND r.version=?""", only).fetchall()
+    return conn.execute("""SELECT r.id AS release_id, r.package, r.version, v.reasoning, v.cited_hunk,
+                                  v.chain_source, v.chain_sink
+                           FROM releases r JOIN verdicts v ON v.release_id=r.id
+                           JOIN flagged_packages f ON f.release_id=r.id
+                           WHERE v.classification='malicious' AND v.human_label IS NULL
+                             AND NOT EXISTS (SELECT 1 FROM investigations i
+                                             WHERE i.release_id=r.id AND i.status='ok')
+                           ORDER BY r.id DESC""").fetchall()
