@@ -433,11 +433,19 @@ def _shown_code(text: str) -> tuple[dict[str, str], dict[str, str]]:
     return {p: _norm(" ".join(ls)) for p, ls in code.items()}, classes
 
 
+_LITERAL = re.compile(r"""(['"`])((?:\\.|(?!\1).)*)\1""")
+
+
 def _only_text(q: str) -> bool:
-    """Nothing but string literals, comments and object keys: text that mentions an action, not code doing it."""
+    """Text that mentions an action, not code doing it: a comment, or string literals and object keys where some
+    string is prose (has spaces). A lone value such as `hostname: '192.0.2.10'` is an option of the call, not
+    prose."""
     if "${" in q:
         return False
-    return not re.search(r"[A-Za-z_$#][\w$]*", _KEY.sub(" ", _TEXT_PARTS.sub(" ", q)))
+    if re.search(r"[A-Za-z_$#][\w$]*", _KEY.sub(" ", _TEXT_PARTS.sub(" ", q))):
+        return False                            # code remains once strings, comments and keys are gone
+    strings = [m.group(2) for m in _LITERAL.finditer(q)]
+    return not strings or any(" " in x.strip() for x in strings)
 
 
 def _token(path: str) -> str:

