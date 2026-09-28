@@ -7,3 +7,9 @@ structured_output = "json_schema"
 # Qwen 3.x is a reasoning model. Turn thinking off: reviews get several times faster.
 [reviewer.extra_body]
 chat_template_kwargs = { enable_thinking = false }
+
+# [investigator]            # a second look at every release flagged malicious; see README
+# enabled = true
+# base_url = "http://localhost:8080/v1"   # any OpenAI-compatible endpoint with tool calling
+# model = "<your-model>"
+# allow_hosts = ["registry.npmjs.org", "api.github.com"]

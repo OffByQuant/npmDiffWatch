@@ -29,6 +29,12 @@ CREATE TABLE IF NOT EXISTS feed_retry(package TEXT PRIMARY KEY, seq INTEGER, att
 CREATE TABLE IF NOT EXISTS reviewer_stats(endpoint TEXT, model TEXT, tok_s REAL, chars_per_token REAL,
   samples INTEGER, state TEXT, detail TEXT, paused_until REAL, slow_streak INTEGER, updated_at TEXT,
   PRIMARY KEY(endpoint, model));
+CREATE TABLE IF NOT EXISTS flagged_packages(release_id INTEGER PRIMARY KEY, package TEXT, version TEXT,
+  prior_version TEXT, new_path TEXT, prior_path TEXT, bytes INTEGER, stored_at TEXT);
+CREATE TABLE IF NOT EXISTS investigations(id INTEGER PRIMARY KEY, release_id INTEGER, model TEXT,
+  created_at TEXT, status TEXT, verdict TEXT, outcome TEXT, confidence REAL, answer_json TEXT, reason TEXT,
+  indicators_json TEXT, gate_notes TEXT, facts_json TEXT, steps INTEGER, tools_json TEXT, seconds REAL);
+CREATE INDEX IF NOT EXISTS ix_inv_release ON investigations(release_id);
 """
 
 def _now(): return datetime.datetime.now(datetime.UTC).isoformat()
@@ -385,8 +391,14 @@ def all_verdicts(conn):
         """SELECT r.id AS release_id, r.package, r.version, r.prior_version,
                   r.is_first_release, r.triage_score,
                   v.classification, v.confidence, v.attack_type, v.reasoning,
-                  v.cited_hunk, v.model, v.urgent, v.created_at, v.human_label, v.human_note
+                  v.cited_hunk, v.model, v.urgent, v.created_at, v.human_label, v.human_note,
+                  i.status AS inv_status, i.outcome AS inv_outcome, i.verdict AS inv_verdict,
+                  i.reason AS inv_reason, i.indicators_json AS inv_indicators,
+                  (SELECT COUNT(*) FROM investigations x WHERE x.release_id = r.id AND x.status != 'ok')
+                    AS inv_failed
            FROM releases r JOIN verdicts v ON v.release_id = r.id
+           LEFT JOIN investigations i ON i.id = (SELECT MAX(id) FROM investigations y
+                                                 WHERE y.release_id = r.id AND y.status = 'ok')
            ORDER BY CASE COALESCE(v.human_label, v.classification) WHEN 'malicious' THEN 0
                     WHEN 'suspicious' THEN 1 ELSE 2 END, r.id DESC""").fetchall()
 
@@ -401,3 +413,57 @@ def prior_version(conn, package, version):
     row = conn.execute("""SELECT version FROM releases WHERE package=? AND version<?
         ORDER BY serial DESC LIMIT 1""", (package, version)).fetchone()
     return row[0] if row else None
+
+
+def flagged_put(conn, rid, package, version, prior_version, new_path, prior_path, nbytes):
+    conn.execute("INSERT OR IGNORE INTO flagged_packages(release_id, package, version, prior_version, new_path, "
+                 "prior_path, bytes, stored_at) VALUES (?,?,?,?,?,?,?,?)",
+                 (rid, package, version, prior_version, new_path, prior_path, nbytes, _now()))
+    conn.commit()
+
+def flagged_get(conn, rid):
+    return conn.execute("SELECT * FROM flagged_packages WHERE release_id=?", (rid,)).fetchone()
+
+def flagged_all(conn):
+    return conn.execute("""SELECT f.*, v.human_label FROM flagged_packages f
+                           LEFT JOIN verdicts v ON v.release_id = f.release_id ORDER BY f.stored_at""").fetchall()
+
+def flagged_delete(conn, rid):
+    conn.execute("DELETE FROM flagged_packages WHERE release_id=?", (rid,)); conn.commit()
+
+def add_investigation(conn, rid, model, r: dict):
+    conn.execute("""INSERT INTO investigations(release_id, model, created_at, status, verdict, outcome, confidence,
+                    answer_json, reason, indicators_json, gate_notes, facts_json, steps, tools_json, seconds)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                 (rid, model, _now(), r.get("status"), r.get("verdict"), r.get("outcome"), r.get("confidence"),
+                  json.dumps(r.get("answer") or {}), r.get("reason") or r.get("error") or "",
+                  json.dumps(r.get("indicators") or []), json.dumps(r.get("gate_notes") or []),
+                  json.dumps(r.get("facts") or []), r.get("steps"), json.dumps(r.get("tools") or []),
+                  r.get("seconds")))
+    conn.commit()
+
+def investigations_for(conn, rid):
+    return conn.execute("SELECT * FROM investigations WHERE release_id=? ORDER BY id", (rid,)).fetchall()
+
+def latest_investigation(conn, rid):
+    return conn.execute("SELECT * FROM investigations WHERE release_id=? AND status='ok' ORDER BY id DESC LIMIT 1",
+                        (rid,)).fetchone()
+
+def failed_investigations(conn, rid) -> int:
+    return conn.execute("SELECT COUNT(*) FROM investigations WHERE release_id=? AND status!='ok'",
+                        (rid,)).fetchone()[0]
+
+def to_investigate(conn, only=None):
+    if only:
+        return conn.execute("""SELECT r.id AS release_id, r.package, r.version, v.reasoning, v.cited_hunk,
+                                      v.chain_source, v.chain_sink
+                               FROM releases r JOIN verdicts v ON v.release_id=r.id
+                               WHERE r.package=? AND r.version=?""", only).fetchall()
+    return conn.execute("""SELECT r.id AS release_id, r.package, r.version, v.reasoning, v.cited_hunk,
+                                  v.chain_source, v.chain_sink
+                           FROM releases r JOIN verdicts v ON v.release_id=r.id
+                           JOIN flagged_packages f ON f.release_id=r.id
+                           WHERE v.classification='malicious' AND v.human_label IS NULL
+                             AND NOT EXISTS (SELECT 1 FROM investigations i
+                                             WHERE i.release_id=r.id AND i.status='ok')
+                           ORDER BY r.id DESC""").fetchall()

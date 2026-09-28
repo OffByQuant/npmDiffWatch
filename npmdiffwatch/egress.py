@@ -51,12 +51,26 @@ def allowed_hosts(cfg) -> frozenset:
     return frozenset(hosts)
 
 
-def install_guard(cfg) -> None:
+def investigator_hosts(cfg) -> frozenset:
+    """The investigate command's allowlist: its configured hosts, extras the user opted into, its model endpoint.
+    Never a host taken from a package."""
+    inv = cfg.investigator
+    hosts = set(inv.allow_hosts) | set(inv.also_allow)
+    if inv.provider == "anthropic":
+        hosts.add(_ANTHROPIC_HOST)
+    else:
+        h = _host_of(inv.base_url)
+        if h:
+            hosts.add(h)
+    return frozenset(hosts)
+
+
+def install_guard(cfg, hosts=None) -> None:
     global _original_getaddrinfo
     if _original_getaddrinfo is not None:
         return
     real = socket.getaddrinfo
-    allowed = allowed_hosts(cfg)
+    allowed = frozenset(hosts) if hosts is not None else allowed_hosts(cfg)
     logger.info("egress guard installed; allowlist=%s", sorted(allowed))
 
     def _guarded(host, *args, **kwargs):

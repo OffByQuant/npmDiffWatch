@@ -1,10 +1,36 @@
 import json
 import logging
 import urllib.request
+from dataclasses import dataclass, field
 
 from . import egress
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ToolCall:
+    id: str
+    name: str
+    arguments: dict | None
+    error: str | None = None
+
+
+@dataclass
+class ChatReply:
+    text: str | None
+    calls: list = field(default_factory=list)
+    assistant: dict = field(default_factory=dict)
+
+
+def _args(raw) -> tuple[dict | None, str | None]:
+    if isinstance(raw, dict):
+        return raw, None
+    try:
+        v = json.loads(raw or "{}")
+    except (TypeError, ValueError) as e:
+        return None, f"arguments are not JSON: {e}"
+    return (v, None) if isinstance(v, dict) else (None, "arguments must be a JSON object")
 
 
 class ReviewUnavailable(Exception):
@@ -161,6 +187,40 @@ class OpenAICompatibleBackend:
         return json.dumps(validate_verdict(parsed, schema))
 
 
+    def user_message(self, text: str) -> dict:
+        return {"role": "user", "content": text}
+
+    def tool_results(self, results) -> list[dict]:
+        return [{"role": "tool", "tool_call_id": cid, "content": content} for cid, content in results]
+
+    def chat(self, *, model, system, messages, tools, max_tokens, timeout=None) -> ChatReply:
+        payload = {"model": model, "messages": [{"role": "system", "content": system}] + list(messages),
+                   "tools": [{"type": "function", "function": t} for t in tools],
+                   "max_tokens": max_tokens, "temperature": 0.2}
+        if self.extra_body:
+            payload.update(self.extra_body)
+        try:
+            data = self._post(f"{self.endpoint}/chat/completions", payload, timeout or self._timeout,
+                              self._auth_headers())
+            msg = data["choices"][0]["message"]
+        except (KeyError, IndexError, TypeError) as e:
+            raise ReviewUnavailable(f"malformed response: {e}") from e
+        except Exception as e:
+            raise ReviewUnavailable(_egress_hint(e)) from e
+        self.last_usage = _usage_of(data)
+        calls = []
+        for tc in msg.get("tool_calls") or []:
+            fn = tc.get("function") or {}
+            a, err = _args(fn.get("arguments"))
+            calls.append(ToolCall(tc.get("id") or f"call{len(calls)}", fn.get("name") or "", a, err))
+        assistant = {"role": "assistant", "content": msg.get("content")}
+        if msg.get("tool_calls"):
+            # Replayed as sent, except arguments that are not JSON: servers re-parse them and fail the request.
+            assistant["tool_calls"] = [
+                {**tc, "function": {**(tc.get("function") or {}), "arguments": "{}"}} if c.error else tc
+                for tc, c in zip(msg["tool_calls"], calls)]
+        return ChatReply(msg.get("content") if isinstance(msg.get("content"), str) else None, calls, assistant)
+
     def ping(self, user_text, *, timeout) -> dict | None:
         """A minimal request (1 output token, no schema) for health probes and speed calibration.
         Raises ReviewUnavailable like complete(). Returns the reported usage, or None."""
@@ -226,6 +286,34 @@ class AnthropicBackend:
             raise ReviewUnavailable(f"non-JSON content: {e}") from e
         return json.dumps(validate_verdict(parsed, schema))
 
+    def user_message(self, text: str) -> dict:
+        return {"role": "user", "content": text}
+
+    def tool_results(self, results) -> list[dict]:
+        return [{"role": "user", "content": [{"type": "tool_result", "tool_use_id": cid, "content": content}
+                                             for cid, content in results]}]
+
+    def chat(self, *, model, system, messages, tools, max_tokens, timeout=None) -> ChatReply:
+        import anthropic
+        try:
+            resp = self.client.messages.create(
+                **({"timeout": timeout} if timeout else {}), model=model, max_tokens=max_tokens,
+                thinking={"type": "adaptive"}, system=system, messages=list(messages),
+                tools=[{"name": t["name"], "description": t["description"], "input_schema": t["parameters"]}
+                       for t in tools])
+        except anthropic.APIError as e:
+            raise ReviewUnavailable(str(e)) from e
+        self.last_usage = _anthropic_usage(resp)
+        calls, text = [], None
+        for b in resp.content:
+            if getattr(b, "type", None) == "tool_use":
+                a, err = _args(b.input)
+                calls.append(ToolCall(b.id, b.name, a, err))
+            elif getattr(b, "type", None) == "text":
+                text = (text or "") + b.text
+        # Thinking blocks must be replayed unchanged with tool use.
+        return ChatReply(text, calls, {"role": "assistant", "content": resp.content})
+
     def ping(self, user_text, *, timeout) -> dict | None:
         import anthropic
         try:
@@ -256,3 +344,13 @@ def make_backend(cfg, client=None):
     if rc.provider == "anthropic":
         return AnthropicBackend(rc.model, rc.escalation_model, client=client)
     raise ValueError(f"unknown reviewer provider: {rc.provider!r}")
+
+
+def make_investigator_backend(cfg, client=None):
+    inv = cfg.investigator
+    if inv.provider == "openai":
+        return OpenAICompatibleBackend(inv.base_url, inv.model, api_key_env=inv.api_key_env,
+                                       structured_output="none", timeout=inv.timeout_s)
+    if inv.provider == "anthropic":
+        return AnthropicBackend(inv.model, client=client)
+    raise ValueError(f"unknown investigator provider: {inv.provider!r}")

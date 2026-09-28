@@ -65,8 +65,14 @@ def main() -> None:
     else:
         from . import fetcher, sandbox
         try:
-            cfg, dl, mc, ruleset = sandbox._decode_input(head, stdin)
-            out = sandbox._encode_output(*sandbox.compute(cfg, dl, mc, ruleset))
+            if head.get("extract"):
+                out = sandbox._extract_worker(sandbox._cfg_from_dict(head["cfg"]), stdin.read(head["len"]))
+            elif head.get("inflate"):
+                out = {"hex": sandbox._inflate_worker(stdin.read(head["len"]), head["inflate"],
+                                                      head["max_length"]).hex()}
+            else:
+                cfg, dl, mc, ruleset = sandbox._decode_input(head, stdin)
+                out = sandbox._encode_output(*sandbox.compute(cfg, dl, mc, ruleset))
         except fetcher.RefusedToExtract as e:
             out = {"error_type": "RefusedToExtract", "error": str(e)}
         except Exception as e:                  # the parent turns this into a retryable scan failure

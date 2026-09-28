@@ -172,6 +172,26 @@ sharing it on your LAN) and runs no code from the packages it shows; every untru
 
 ---
 
+### Second look: the investigator
+
+`npmdiffwatch investigate` re-examines every release the reviewer called malicious, with a model that can use
+tools: list, read, search and decode the package's files, look at its install scripts, compare versions, fetch
+other versions or the maintainer's other packages from the npm registry, and check the linked GitHub repository.
+It never runs package code, never contacts a host named in a package, and reaches only the npm registry,
+GitHub's API and your model endpoint (`allow_hosts`, `also_allow`). A repository link is treated as a claim,
+not proof.
+
+It is given the first review's claim and decides for itself, but its evidence is checked in code before it
+counts: a malicious verdict must quote both ends of the chain from the flagged release, and anything less must
+quote the code that shows why the claim is not what it seemed; otherwise the original stands as *inconclusive*.
+Files it did not read and text in a package that tries to talk to the reviewer are noted on the record. The result is added beside the original verdict on the dashboard; nothing is
+overwritten, reported or deleted for you. When it stays malicious, use the report button.
+
+To keep the evidence after npm removes a package, the scanner stores the tarballs of releases flagged malicious
+(beside the database, never unpacked) while `[investigator] enabled = true`. They are kept while you label the
+release malicious and otherwise for `keep_flagged_days`. With `provider = "anthropic"` the package content is
+sent to Anthropic.
+
 ## 🔒 Run it safely
 
 NpmDiffWatch ingests untrusted bytes from the npm registry and runs community-authored rules. The

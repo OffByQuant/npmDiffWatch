@@ -3,3 +3,9 @@ provider = "anthropic"
 model = "claude-sonnet-4-6"
 escalation_model = "claude-opus-4-8"
 structured_output = "json_schema"
+
+# [investigator]            # a second look at every release flagged malicious; see README
+# enabled = true
+# base_url = "http://localhost:8080/v1"   # any OpenAI-compatible endpoint with tool calling
+# model = "<your-model>"
+# allow_hosts = ["registry.npmjs.org", "api.github.com"]

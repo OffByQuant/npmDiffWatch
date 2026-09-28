@@ -18,6 +18,7 @@ import resource
 import shutil
 import subprocess
 import sys
+import zlib
 from pathlib import Path
 
 from . import content, differ, engine, execclass, facts, fetcher, rules
@@ -51,7 +52,7 @@ def compute(cfg, dl: Download, maintainer_context, ruleset):
 
 # ---- parent -> worker: one JSON line, then the raw tarballs ----
 def _cfg_to_dict(cfg) -> dict:
-    d = {f.name: getattr(cfg, f.name) for f in dataclasses.fields(cfg) if f.name != "reviewer"}
+    d = {f.name: getattr(cfg, f.name) for f in dataclasses.fields(cfg) if f.name not in ("reviewer", "investigator")}
     for k in _PATH_FIELDS:
         if d[k] is not None:
             d[k] = str(Path(d[k]).resolve())
@@ -194,6 +195,69 @@ def _decode_output(raw: bytes, cfg, ruleset):
 
 
 # ---- launching the worker ----
+def _extract_worker(cfg, blob: bytes) -> dict:
+    files, bins, _, _ = fetcher.extract_tgz(blob, cfg)
+    return {"files": {p: b.decode("utf-8", errors="replace") for p, b in files.items()}, "binaries": bins}
+
+
+def _inflate_worker(data: bytes, method: str, max_length: int) -> bytes:
+    wbits = 16 + zlib.MAX_WBITS if method == "gzip" else zlib.MAX_WBITS
+    try:
+        return zlib.decompressobj(wbits).decompress(data, max_length)
+    except zlib.error as e:
+        raise SandboxError(f"cannot {method}-decode: {e}") from e
+
+
+def _decode_files(raw: bytes, cfg) -> tuple[dict[str, bytes], list[dict]]:
+    try:
+        out = json.loads(raw)
+    except ValueError as e:
+        raise SandboxError(f"worker sent non-JSON: {e}") from e
+    if "error" in out:
+        if out.get("error_type") == "RefusedToExtract":
+            raise fetcher.RefusedToExtract(out["error"])
+        raise SandboxError(str(out["error"]))
+    f, b = out.get("files"), out.get("binaries")
+    _check(isinstance(f, dict) and all(isinstance(k, str) and isinstance(v, str) and not fetcher._unsafe(k)
+                                       for k, v in f.items()), "file map")
+    _check(isinstance(b, list) and all(isinstance(x, dict) and isinstance(x.get("path"), str) for x in b),
+           "binary list")
+    files = {k: v.encode("utf-8") for k, v in f.items()}
+    _check(sum(len(v) for v in files.values()) <= cfg.max_total_bytes, "file map size")
+    return files, b
+
+
+def extract_files(cfg, blob: bytes, backend: str | None = None):
+    """A whole version's text files (path -> bytes) and its binary or oversized members, unpacked in the sandbox."""
+    backend = backend or _backend
+    if backend == "off":
+        out = _extract_worker(cfg, blob)
+        return {k: v.encode("utf-8") for k, v in out["files"].items()}, out["binaries"]
+    head = {"extract": True, "cfg": _cfg_to_dict(cfg), "sys_path": _import_paths(), "len": len(blob)}
+    return _decode_files(_run(cfg, backend, json.dumps(head).encode() + b"\n" + blob), cfg)
+
+
+def inflate(cfg, data: bytes, method: str, max_length: int, backend: str | None = None) -> bytes:
+    """gzip or zlib, at most max_length bytes out, in the sandbox."""
+    if method not in ("gzip", "zlib"):
+        raise SandboxError(f"unknown method {method!r}")
+    backend = backend or _backend
+    if backend == "off":
+        return _inflate_worker(data, method, max_length)
+    head = {"inflate": method, "max_length": max_length, "sys_path": _import_paths(), "len": len(data)}
+    raw = _run(cfg, backend, json.dumps(head).encode() + b"\n" + data)
+    try:
+        out = json.loads(raw)
+    except ValueError as e:
+        raise SandboxError(f"worker sent non-JSON: {e}") from e
+    if "error" in out:
+        raise SandboxError(str(out["error"]))
+    _check(isinstance(out.get("hex"), str), "inflate output")
+    res = bytes.fromhex(out["hex"])
+    _check(len(res) <= max_length, "inflate output size")
+    return res
+
+
 def _home() -> str:
     return os.path.realpath(os.path.expanduser("~"))
 
