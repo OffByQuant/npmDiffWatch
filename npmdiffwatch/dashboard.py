@@ -8,7 +8,7 @@ so all of it is html.escape'd and all URL path segments are urllib.parse.quote'd
 An XSS in the security dashboard would be a self-own.
 """
 import html
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 from . import guard as guard_mod
 
@@ -23,6 +23,12 @@ def npm_package_url(package: str) -> str:
 
 def npm_version_url(package: str, version: str) -> str:
     return f"{npm_package_url(package)}/v/{quote(version, safe='')}"
+
+
+def npm_report_url(package: str, version: str) -> str:
+    """npm's own malware report form for this version (the "Report malware" link on a package page)."""
+    return "https://www.npmjs.com/support?" + urlencode(
+        {"inquire": "security", "security-inquire": "malware", "package": package, "version": version})
 
 
 def humanize_age(seconds) -> str:
@@ -84,7 +90,7 @@ def _card(row: dict) -> str:
     actions = [f'<a class="btn view" href="{e(npm_version_url(pkg, ver))}" '
                f'target="_blank" rel="noopener noreferrer">View on npm ↗</a>']
     if flagged:
-        actions.insert(0, f'<a class="btn report" href="{e(npm_package_url(pkg))}" '
+        actions.insert(0, f'<a class="btn report" href="{e(npm_report_url(pkg, ver))}" '
                        f'target="_blank" rel="noopener noreferrer">Report malware on npm ↗</a>')
     reasoning = row.get("reasoning") or ""
     cited = row.get("cited_hunk") or ""
@@ -211,5 +217,5 @@ def render_dashboard(rows, status: dict = None, generated_at: str = "") -> str:
 <div class="sub">{c["model_reviewed"]} package(s) reviewed by the model · {c["flagged"]} flagged for review{f" · {c['unscanned']} not scanned — need manual review" if c["unscanned"] else ""}{gen}</div>
 {strip}
 {cards}
-<footer>Flagged a real attack? Open it on npm and use “Report malware” for takedown. Static, no-execution analysis · 100% local.</footer>
+<footer>Flagged a real attack? The report button opens npm’s malware report form for that version. Static, no-execution analysis · 100% local.</footer>
 </body></html>"""
