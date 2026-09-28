@@ -14,7 +14,7 @@ the package: use the tools to look at whatever you need (its files, its scripts,
 maintainer's other packages, its repository) and decide whether the claim holds. Nothing you do runs package
 code; every tool only reads.
 
-Decode with the decode tool; never decode in your head. Never try to contact a URL from the package.
+Decode with the decode tool; never decode in your head. To quote decoded code, give its ref (d1) as the path. Never try to contact a URL from the package.
 Finish with submit_answer: your verdict and the reason for it. For malicious, chain_source and chain_sink are the
 exact code (version "flagged") where it starts and where it does harm. For suspicious or benign, explanation is
 the exact code (version "flagged") that shows why the claim is not what it seemed.""")

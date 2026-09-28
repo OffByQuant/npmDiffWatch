@@ -54,7 +54,13 @@ def _quote_ok(q, ws, notes, *, code_only=False) -> bool:
         notes.append("a quote is not from the flagged version")
         return False
     path, raw = q.get("path"), str(q.get("code") or "")
-    seen = ws.read_text.get(("flagged", path))
+    if path in ws.decoded_from:          # a decode output counts only if its value came from the flagged files
+        seen = ws.read_text.get(("decoded", path)) if ws.decoded_from[path] else None
+        if seen is None:
+            notes.append(f"a quote is from decode {path}, whose value is not from the flagged version")
+            return False
+    else:
+        seen = ws.read_text.get(("flagged", path))
     if seen is None:
         notes.append(f"a quote is from {path!r}, which the investigation did not read")
         return False
@@ -84,7 +90,7 @@ def judge(answer: dict, ws) -> Outcome:
             if not _quote_ok(answer.get(end), ws, notes, code_only=True):
                 ok, rejected = False, rejected + 1
         if ok:
-            s, k = answer["chain_source"]["path"], answer["chain_sink"]["path"]
+            s, k = (ws.decoded_from.get(answer[e]["path"]) or answer[e]["path"] for e in ("chain_source", "chain_sink"))
             files = ws.files["flagged"]
             if s != k and not (reviewer._names(files.get(s, b"").decode("utf-8", "replace"), k)
                                or reviewer._names(files.get(k, b"").decode("utf-8", "replace"), s)):

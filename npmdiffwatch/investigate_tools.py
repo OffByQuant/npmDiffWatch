@@ -92,6 +92,7 @@ class Workspace:
         self.facts: list[str] = []
         self.log: list[dict] = []
         self.decoded: dict[str, tuple[bytes, int]] = {}
+        self.decoded_from: dict[str, str | None] = {}     # decode ref -> the flagged file its value came from
         self.decoded_budget = self.inv.max_decoded_bytes
         self.downloaded = 0
         self.extracted = 0
@@ -231,8 +232,10 @@ class Workspace:
             if ref not in self.decoded:
                 raise ToolError(f"unknown ref {ref!r}")
             data, depth = self.decoded[ref]
+            origin = self.decoded_from[ref]
         elif isinstance(value, str):
             data, depth = value.encode("utf-8", errors="replace"), 0
+            origin = next((p for p, b in self.files["flagged"].items() if len(data) >= 8 and data in b), None)
         else:
             raise ToolError("give value or ref")
         if depth + len(methods) > _DECODE_MAX_DEPTH:
@@ -246,6 +249,7 @@ class Workspace:
             raise ToolError("decode output limit for this investigation reached")
         rid = f"d{len(self.decoded) + 1}"
         self.decoded[rid] = (data, depth + len(methods))
+        self.decoded_from[rid] = origin
         if depth + len(methods) > _DECODE_PER_CALL:
             self.facts.append(f"a payload is nested more than {_DECODE_PER_CALL} encodings deep")
         text = data.decode("utf-8", errors="replace")[: self.inv.read_chars]

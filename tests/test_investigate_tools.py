@@ -197,3 +197,12 @@ def test_scripts_records_the_real_package_json_so_install_commands_are_quotable(
     ws = _ws()
     ws.call("scripts", {"version": "flagged"})
     assert ws.read_text[("flagged", "package.json")].strip() == PJ
+
+
+def test_a_decode_remembers_which_flagged_file_its_value_came_from():
+    payload = base64.b64encode(b"require('child_process').exec(cmd)").decode()
+    ws = _ws(new={**NEW, "setup.js": f"const p = '{payload}';\n"})
+    ws.call("decode", {"value": payload, "methods": ["base64"]})
+    ws.call("decode", {"ref": "d1", "methods": ["reverse"]})
+    ws.call("decode", {"value": base64.b64encode(b"anything the model typed").decode(), "methods": ["base64"]})
+    assert ws.decoded_from == {"d1": "setup.js", "d2": "setup.js", "d3": None}
