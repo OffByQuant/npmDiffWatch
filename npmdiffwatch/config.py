@@ -5,6 +5,12 @@ from pathlib import Path
 
 @dataclass(frozen=True)
 class ReviewerConfig:
+    workflow: str = "abuse"          # legacy text/gate path requires explicit opt-in
+    extension: str | None = None     # trusted operator-owned module:function
+    context_tokens: int = 128000
+    queue_max_bytes: int = 2 * 1024**3
+    queue_max_jobs: int = 10000
+    concurrency: int = 1
     provider: str = "openai"
     base_url: str = "http://localhost:8000/v1"
     model: str = "qwen-singleshot"
@@ -68,6 +74,7 @@ class Config:
     parse_sandbox: str = "auto"       # "auto": sandbox when this machine can, else warn; "on": refuse to scan without; "off"
     parse_timeout_s: float = 120.0    # per release, unpacking and parsing inside the sandbox
     parse_memory_max: str = "2G"      # Linux (systemd-run) only; macOS has no per-process memory cap
+    parse_rss_max_bytes: int = 4 * 1024**3  # macOS sampled parent + parser budget
     fetch_timeout_s: float = 30.0     # per socket read
     fetch_deadline_s: float = 120.0   # per download, total
     packument_deadline_s: float = 300.0   # package metadata can be tens of MB
@@ -96,6 +103,14 @@ def load_config(path) -> Config:
     iv = raw.pop("investigator", {})
     default_rv = ReviewerConfig()
     reviewer = replace(default_rv, **{k: v for k, v in rv.items() if hasattr(default_rv, k)})
+    if reviewer.workflow not in ("legacy", "abuse"):
+        raise ValueError("reviewer.workflow must be legacy or abuse")
+    if type(reviewer.context_tokens) is not int or not 8192 <= reviewer.context_tokens <= 128000:
+        raise ValueError("reviewer.context_tokens must be an integer between 8192 and 128000")
+    if any(type(value) is not int or value <= 0 for value in (reviewer.queue_max_bytes, reviewer.queue_max_jobs)):
+        raise ValueError("review queue retention limits must be positive integers")
+    if type(reviewer.concurrency) is not int or not 1 <= reviewer.concurrency <= 16:
+        raise ValueError("reviewer.concurrency must be an integer between 1 and 16")
     default_iv = InvestigatorConfig()
     iv = {k: (tuple(v) if isinstance(v, list) else v) for k, v in iv.items() if hasattr(default_iv, k)}
     investigator = replace(default_iv, **iv)

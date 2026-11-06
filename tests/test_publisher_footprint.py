@@ -9,7 +9,7 @@ change to a throwaway account escalates on its own.
 from npmdiffwatch import fetcher, differ, facts, engine
 from npmdiffwatch.models import ArtifactSet
 from npmdiffwatch.rules import Rule
-from npmdiffwatch.config import Config
+from tests.legacy_config import Config
 
 
 def _versions(pubs):

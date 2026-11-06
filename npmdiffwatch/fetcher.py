@@ -355,7 +355,10 @@ def _publishing(versions: dict, new_version: str, prior_version: str | None, tim
             "repository": repo[:300] if isinstance(repo, str) else None}
 
 
-def download(cfg, rel: NewRelease, meta: dict | None = None) -> "Download | ArtifactSet | Removed | None":
+_UNPINNED = object()
+
+
+def download(cfg, rel: NewRelease, meta: dict | None = None, *, pinned_prior=_UNPINNED) -> "Download | ArtifactSet | Removed | None":
     """Everything that needs the network, and nothing that opens the tarballs. Returns an ArtifactSet (with no
     files) when the release is a new package the config skips, since there is nothing to unpack."""
     if quarantine.is_quarantined(rel.package):
@@ -383,14 +386,22 @@ def download(cfg, rel: NewRelease, meta: dict | None = None) -> "Download | Arti
     if not tarball_url:
         return None
 
-    pred = _pick_predecessor(meta, rel.version)
+    if pinned_prior is _UNPINNED:
+        pred = _pick_predecessor(meta, rel.version)
+    elif pinned_prior is None:
+        pred = None
+    else:
+        prior_url = (versions.get(pinned_prior) or {}).get("dist", {}).get("tarball")
+        if not isinstance(pinned_prior, str) or not prior_url or pinned_prior == rel.version:
+            raise MetadataUnavailable("the exact pinned predecessor is unavailable")
+        pred = (pinned_prior, prior_url)
     is_new = pred is None
     mtmeta = _maintainer_metadata(meta)
     pub_changed = _publisher_changed(versions, rel.version, pred[0] if pred else None)
     mtmeta["publisher_changed"] = pub_changed
     # Footprint lookup is one extra request; only do it when the publisher changed.
     mtmeta["low_footprint_publisher"] = bool(
-        pub_changed and _low_footprint_publisher(new_ver_data, cfg))
+        cfg.reviewer.workflow == "legacy" and pub_changed and _low_footprint_publisher(new_ver_data, cfg))
     mtmeta["publishing"] = _publishing(versions, rel.version, pred[0] if pred else None,
                                        meta.get("time") if isinstance(meta.get("time"), dict) else {})
     scripts = new_ver_data.get("scripts", {}) or {}
@@ -411,7 +422,8 @@ def download(cfg, rel: NewRelease, meta: dict | None = None) -> "Download | Arti
         except Exception:
             prior_tgz = None
         pred_ver_data = versions.get(prior_ver)
-        dep_findings = _screen_added_deps(new_ver_data, rel.package, prior_ver, pred_ver_data, cfg)
+        if cfg.reviewer.workflow == "legacy":
+            dep_findings = _screen_added_deps(new_ver_data, rel.package, prior_ver, pred_ver_data, cfg)
 
     return Download(rel.package, rel.version, prior_ver, is_new, tgz_bytes, prior_tgz,
                     maintainer_metadata=mtmeta, added_dep_findings=dep_findings, scripts_field=scripts,

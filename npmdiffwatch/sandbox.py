@@ -9,6 +9,7 @@ recomputes the score itself.
 The sandbox keeps a parser exploit from reaching the network, the database, other releases or the user's files.
 It cannot make an exploited parser tell the truth about the package that exploited it."""
 import dataclasses
+import errno
 import hashlib
 import json
 import logging
@@ -18,10 +19,11 @@ import resource
 import shutil
 import subprocess
 import sys
+import threading
 import zlib
 from pathlib import Path
 
-from . import content, differ, engine, execclass, facts, fetcher, rules
+from . import content, differ, engine, execclass, facts, fetcher, hostmem, rules
 from .config import Config
 from .models import Diff, Download, FileDiff, FiredRule, Hunk, PkgJsonChange, TriageResult
 from .rules import Rule
@@ -41,6 +43,10 @@ _PARENT_RULES = {"maintainer", "dep"}     # rule types computed from registry me
 
 class SandboxError(Exception):
     """The sandbox could not be used, or the worker failed or sent back something malformed."""
+
+
+class SandboxResourceLimit(SandboxError):
+    """The RSS monitor stopped or could not safely sample an unreviewed parser."""
 
 
 # ---- the work itself: no network, no database ----
@@ -237,6 +243,48 @@ def extract_files(cfg, blob: bytes, backend: str | None = None):
     return _decode_files(_run(cfg, backend, json.dumps(head).encode() + b"\n" + blob), cfg)
 
 
+def extract_exact_files(cfg, blob: bytes, backend: str | None = None, *, with_context=False, full_text=False):
+    """Preserve original evidence bytes; only working parse sandboxes are allowed."""
+    backend = backend or _backend
+    if backend not in ("seatbelt", "systemd"):
+        raise SandboxError("exact evidence extraction requires a working sandbox")
+    head = {"extract": True, "exact_bytes": True, "cfg": _cfg_to_dict(cfg),
+            "sys_path": _import_paths(), "len": len(blob), "execution_context": with_context, "full_text": full_text}
+    try:
+        out = json.loads(_run(cfg, backend, json.dumps(head).encode() + b"\n" + blob))
+        if isinstance(out, dict) and out.get("error_type") == "RefusedToExtract":
+            raise fetcher.RefusedToExtract(out["error"])
+        _check(isinstance(out, dict) and "error" not in out, "exact extraction response")
+        entries, bins = out.get("files_hex"), out.get("binaries")
+        _check(isinstance(entries, dict) and isinstance(bins, list), "exact extraction fields")
+        files, total = {}, 0
+        for path, value in entries.items():
+            _check(isinstance(path, str) and not fetcher._unsafe(path) and isinstance(value, str), "exact file")
+            _check(len(value) <= (cfg.max_total_bytes if full_text else cfg.max_source_file_bytes) * 2, "exact source size")
+            total += len(value) // 2
+            _check(total <= cfg.max_total_bytes, "exact extracted size")
+            files[path] = bytes.fromhex(value)
+        _check(all(isinstance(b, dict) and isinstance(b.get("path"), str)
+                   and not fetcher._unsafe(b["path"]) for b in bins), "exact binary inventory")
+        if with_context:
+            context = out.get("execution_context")
+            _check(isinstance(context, dict) and context.get("artifact_sha256") == hashlib.sha256(blob).hexdigest(), "context artifact")
+            _check(context.get("engine") == "sandbox-static-inventory-2" and isinstance(context.get("files"), dict)
+                   and set(context["files"]) == set(files), "context inventory")
+            for path, info in context["files"].items():
+                _check(isinstance(info, dict) and info.get("sha256") == hashlib.sha256(files[path]).hexdigest()
+                       and info.get("class") in execclass.CLASSES and type(info.get("verified_inert")) is bool
+                       and isinstance(info.get("why"), str)
+                       and isinstance(info.get("imports"), list) and all(p in files for p in info["imports"])
+                       and isinstance(info.get("readers"), list) and all(p in files for p in info["readers"])
+                       and isinstance(info.get("reads"), list) and all(p in files for p in info["reads"])
+                       and (not info["verified_inert"] or (info["class"] == "inert" and not info["readers"])), "context file")
+            return files, bins, context
+        return files, bins
+    except (ValueError, TypeError, KeyError, AttributeError) as error:
+        raise SandboxError(f"invalid exact extraction: {error}") from error
+
+
 def inflate(cfg, data: bytes, method: str, max_length: int, backend: str | None = None) -> bytes:
     """gzip or zlib, at most max_length bytes out, in the sandbox."""
     if method not in ("gzip", "zlib"):
@@ -340,6 +388,63 @@ def _systemd_cmd(cfg) -> list[str]:
     return cmd + [f"--property={p}" for p in props] + ["--"] + _worker_argv()
 
 
+def _run_rss_guarded(cfg, cmd, payload, pre, env):
+    process = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                               preexec_fn=pre, env=env)
+    stop = threading.Event()
+    errors = []
+    peak = 0
+
+    def monitor():
+        nonlocal peak
+        while not stop.is_set() and process.poll() is None:
+            try:
+                parent_used = hostmem.rss_bytes(os.getpid())
+            except OSError as error:
+                errors.append(f"could not enforce RSS budget: {error}")
+            else:
+                try:
+                    child_used = hostmem.rss_bytes(process.pid)
+                except OSError as error:
+                    if error.errno == errno.ESRCH:
+                        try:
+                            process.wait(timeout=0.2)
+                        except (subprocess.TimeoutExpired, OSError):
+                            pass
+                        else:
+                            return
+                    errors.append(f"could not enforce RSS budget: {error}")
+                else:
+                    used = parent_used + child_used
+                    peak = max(peak, used)
+                    if used > cfg.parse_rss_max_bytes:
+                        errors.append(f"combined RSS {used / 2**20:.0f} MiB exceeds "
+                                      f"{cfg.parse_rss_max_bytes / 2**20:.0f} MiB budget")
+            if errors:
+                try:
+                    process.kill()
+                except ProcessLookupError:
+                    pass
+                return
+            stop.wait(0.1)
+
+    thread = threading.Thread(target=monitor, daemon=True)
+    thread.start()
+    try:
+        stdout, stderr = process.communicate(payload, timeout=cfg.parse_timeout_s + 10)
+    except BaseException:
+        if process.poll() is None:
+            process.kill()
+        process.communicate()
+        raise
+    finally:
+        stop.set(); thread.join()
+    logger.info("parse combined RSS peak %.0f MiB; budget %.0f MiB", peak / 2**20, cfg.parse_rss_max_bytes / 2**20)
+    if errors:
+        raise SandboxResourceLimit(errors[0])
+    return subprocess.CompletedProcess(cmd, process.returncode, stdout, stderr)
+
+
 def _run(cfg, backend: str, payload: bytes) -> bytes:
     # The worker gets none of this process's environment (API keys, tokens). systemd-run only needs what it
     # takes to reach the service manager; the unit it starts does not inherit these.
@@ -353,8 +458,11 @@ def _run(cfg, backend: str, payload: bytes) -> bytes:
     else:
         raise SandboxError(f"unknown sandbox {backend!r}")
     try:
-        proc = subprocess.run(cmd, input=payload, capture_output=True, timeout=cfg.parse_timeout_s + 10,
-                              preexec_fn=pre, env=env)
+        if backend == "seatbelt" and cfg.parse_rss_max_bytes > 0:
+            proc = _run_rss_guarded(cfg, cmd, payload, pre, env)
+        else:
+            proc = subprocess.run(cmd, input=payload, capture_output=True, timeout=cfg.parse_timeout_s + 10,
+                                  preexec_fn=pre, env=env)
     except subprocess.TimeoutExpired as e:
         raise SandboxError(f"{backend} sandbox timed out after {cfg.parse_timeout_s:.0f}s") from e
     except OSError as e:

@@ -3,7 +3,7 @@ interrupted. A failed scan must not kill the daemon; Ctrl-C must stop it cleanly
 import dataclasses
 
 from npmdiffwatch import orchestrator
-from npmdiffwatch.config import Config
+from tests.legacy_config import Config
 
 
 def _cfg(tmp_path) -> Config:

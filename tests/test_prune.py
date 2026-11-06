@@ -10,7 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from npmdiffwatch import orchestrator, store
-from npmdiffwatch.config import Config
+from tests.legacy_config import Config
 from npmdiffwatch.models import NewRelease
 
 

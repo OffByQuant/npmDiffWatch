@@ -3,7 +3,7 @@ import json
 import tarfile
 
 from npmdiffwatch import orchestrator, reviewer
-from npmdiffwatch.config import Config
+from tests.legacy_config import Config
 from npmdiffwatch.models import Download
 
 

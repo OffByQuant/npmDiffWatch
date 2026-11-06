@@ -5,7 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from npmdiffwatch import fetcher, guard as g, ingest, orchestrator, reviewer, store
-from npmdiffwatch.config import Config
+from tests.legacy_config import Config
 from npmdiffwatch.ingest import ChangesPage
 from npmdiffwatch.models import Diff, FileDiff, FiredRule, Hunk, NewRelease, TriageResult
 

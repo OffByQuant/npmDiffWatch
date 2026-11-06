@@ -46,12 +46,33 @@ def _reach(host):
     return "exposed to the local network — anyone who can reach this host"
 
 
-def _file_server(directory, port, host="127.0.0.1"):
+def _file_server(directory, port, host="127.0.0.1", *, filename="dashboard.html"):
     """A read-only static file server (no control endpoints). Binds 127.0.0.1 by
     default; pass host="0.0.0.0" to expose it to the local network."""
     import functools
     from http.server import SimpleHTTPRequestHandler, HTTPServer
-    handler = functools.partial(SimpleHTTPRequestHandler, directory=str(directory))
+    from urllib.parse import quote, unquote, urlsplit
+    if not isinstance(filename, str) or "/" in filename or "\\" in filename or not filename.endswith((".html", ".htm")):
+        raise ValueError("dashboard server accepts one HTML filename only")
+
+    class DashboardHandler(SimpleHTTPRequestHandler):
+        def send_head(self):
+            if unquote(urlsplit(self.path).path) not in ("/", "/" + filename):
+                self.send_error(404)
+                return None
+            self.path = "/" + quote(filename)
+            return super().send_head()
+
+        def list_directory(self, path):
+            self.send_error(404)
+            return None
+
+        def end_headers(self):
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
+            super().end_headers()
+
+    handler = functools.partial(DashboardHandler, directory=str(directory))
     return HTTPServer((host, port), handler)
 
 
@@ -90,6 +111,8 @@ def main():
                      choices=["too_large", "review_failed", "endpoint_unreachable", "reviewer_disabled"],
                      help="only this queue reason (repeatable)")
     rpp.add_argument("--limit", type=int, default=None, help="review at most N releases")
+    workerp = sub.add_parser("review-worker", help="drain retained abuse-review jobs without polling npm")
+    workerp.add_argument("--limit", type=int, default=None)
     adjp = sub.add_parser("adjudicate", help="record your verdict on a queued suspicious release")
     adjp.add_argument("release_id", type=int)
     adjp.add_argument("label", choices=["benign", "malicious", "suspicious"])
@@ -143,7 +166,15 @@ def main():
     if args.cmd == "run":
         wf = _watchlist_or_exit(cfg)
         n = run_once(cfg, seed_if_fresh=not args.backfill, recent=args.recent, watch=wf.current() if wf else None)
+        if cfg.reviewer.workflow == "abuse":
+            from .abuse_coordinator import drain
+            drain(cfg)
         print(f"[npmdiffwatch] processed {n} releases")
+    elif args.cmd == "review-worker":
+        if cfg.reviewer.workflow != "abuse":
+            p.error("review-worker requires reviewer.workflow = 'abuse'")
+        from .abuse_coordinator import drain
+        print(f"[npmdiffwatch] completed {drain(cfg, limit=args.limit)} retained review job(s)")
     elif args.cmd == "seed-now":
         s = seed_now(cfg)
         print(f"[npmdiffwatch] cursor seeded to serial {s}" if s is not None
@@ -234,7 +265,7 @@ def main():
         out = export_dashboard(cfg, out_path=args.out)
         print(f"[npmdiffwatch] dashboard written to {out}")
         if args.serve:
-            httpd = _file_server(out.parent, args.port, args.host)
+            httpd = _file_server(out.parent, args.port, args.host, filename=out.name)
             print(f"[npmdiffwatch] serving on http://{args.host}:{args.port}/{out.name} "
                   f"({_reach(args.host)}) — Ctrl-C to stop")
             try:
@@ -249,7 +280,7 @@ def main():
         httpd = None
         if args.serve:
             import threading
-            httpd = _file_server(out.parent, args.port, args.host)
+            httpd = _file_server(out.parent, args.port, args.host, filename=out.name)
             threading.Thread(target=httpd.serve_forever, daemon=True).start()
             print(f"[npmdiffwatch] serving http://{args.host}:{args.port}/{out.name} ({_reach(args.host)})")
         print(f"[npmdiffwatch] watching — scanning every {args.interval}s, Ctrl-C to stop")

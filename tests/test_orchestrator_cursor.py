@@ -4,7 +4,7 @@ import dataclasses
 from pathlib import Path
 
 from npmdiffwatch import orchestrator, ingest, fetcher, store
-from npmdiffwatch.config import Config
+from tests.legacy_config import Config
 from npmdiffwatch.ingest import ChangesPage
 from npmdiffwatch.models import NewRelease
 

@@ -8,7 +8,7 @@ completed and the release was retried forever.
 import dataclasses
 
 from npmdiffwatch import fetcher
-from npmdiffwatch.config import Config
+from tests.legacy_config import Config
 
 
 def _cfg(tmp_path):

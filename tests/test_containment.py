@@ -61,7 +61,7 @@ def test_no_subprocess_or_shell_out():
     offenders = []
     for path in SOURCES:
         tree = _parse(path)
-        if path.name in ("sandbox.py", "_parse_worker.py"):     # their process launches are pinned below
+        if path.name in ("sandbox.py", "_parse_worker.py", "opencode_backend.py"):  # pinned below
             continue
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
@@ -81,7 +81,7 @@ def test_no_subprocess_or_shell_out():
 def test_sandbox_only_launches_its_worker_without_a_shell():
     tree = _parse(PKG_DIR / "sandbox.py")
     calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and _attr_chain(n.func).startswith("subprocess.")]
-    assert [_attr_chain(c.func) for c in calls] == ["subprocess.run"]
+    assert [_attr_chain(c.func) for c in calls] == ["subprocess.Popen", "subprocess.CompletedProcess", "subprocess.run"]
     assert all(kw.arg != "shell" for kw in calls[0].keywords)
     launchers = {n.value for n in ast.walk(tree) if isinstance(n, ast.Constant) and n.value in
                  {"sandbox-exec", "systemd-run"}}
@@ -103,6 +103,21 @@ def test_parse_worker_only_tries_to_start_true_in_its_self_check():
     [(_, call)] = calls
     assert isinstance(call.args[0], ast.List) and [e.value for e in call.args[0].elts] == ["/usr/bin/true"]
     assert all(kw.arg != "shell" for kw in call.keywords)
+
+
+def test_opencode_only_launches_fixed_model_transport_without_a_shell():
+    tree = _parse(PKG_DIR / "opencode_backend.py")
+    calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and _attr_chain(n.func).startswith("subprocess.")]
+    assert sorted(_attr_chain(c.func) for c in calls) == ["subprocess.Popen", "subprocess.TimeoutExpired"]
+    launch = next(c for c in calls if _attr_chain(c.func) == "subprocess.Popen")
+    assert all(kw.arg != "shell" for kw in launch.keywords)
+    commands = [n.value for n in ast.walk(tree) if isinstance(n, ast.Assign)
+        and any(isinstance(t, ast.Name) and t.id == "command" for t in n.targets)]
+    [command] = commands
+    assert isinstance(command, ast.List)
+    assert [e.value if isinstance(e, ast.Constant) else e.id for e in command.elts] == [
+        "opencode", "run", "--standalone", "--model", "model", "--agent", "agent_id", "--format", "json"]
+    assert not any(isinstance(n, ast.Attribute) and n.attr in {"write_text", "write_bytes", "extractall"} for n in ast.walk(tree))
 
 
 def test_fetcher_never_uses_extractall():
