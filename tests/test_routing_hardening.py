@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from npmdiffwatch import differ, engine, orchestrator, reviewer, routing, rules, sandbox, store
-from npmdiffwatch.config import Config
+from tests.legacy_config import Config
 from npmdiffwatch.models import ArtifactSet, Diff, FileDiff, NewRelease, PkgJsonChange, TriageResult
 
 _RULES = rules.load_rules(Path("rules/community"))

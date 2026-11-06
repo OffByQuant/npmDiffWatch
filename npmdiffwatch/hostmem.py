@@ -8,9 +8,33 @@ import logging
 import platform
 import re
 import struct
+from functools import cache
 from urllib.parse import urlsplit
 
 logger = logging.getLogger(__name__)
+
+
+class _RusageInfo(ctypes.Structure):
+    _fields_ = [("uuid", ctypes.c_ubyte * 16)] + [(name, ctypes.c_uint64) for name in (
+        "user_time", "system_time", "pkg_idle_wakeups", "interrupt_wakeups", "pageins", "wired_size",
+        "resident_size", "phys_footprint", "proc_start_abstime", "proc_exit_abstime")]
+
+
+@cache
+def _libproc():
+    if platform.system() != "Darwin":
+        raise OSError("RSS watchdog requires macOS libproc; Linux uses systemd MemoryMax")
+    lib = ctypes.CDLL(ctypes.util.find_library("proc"), use_errno=True)
+    lib.proc_pid_rusage.argtypes = (ctypes.c_int, ctypes.c_int, ctypes.c_void_p)
+    lib.proc_pid_rusage.restype = ctypes.c_int
+    return lib
+
+
+def rss_bytes(pid):
+    info = _RusageInfo()
+    if _libproc().proc_pid_rusage(pid, 0, ctypes.byref(info)) != 0:
+        raise OSError(ctypes.get_errno(), f"proc_pid_rusage({pid})")
+    return info.resident_size
 
 
 def _sysctl(name):

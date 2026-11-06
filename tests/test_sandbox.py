@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from npmdiffwatch import differ, engine, fetcher, orchestrator, sandbox, store
-from npmdiffwatch.config import Config
+from tests.legacy_config import Config
 from npmdiffwatch.models import Download, NewRelease
 
 seatbelt = pytest.mark.skipif(sys.platform != "darwin" or not shutil.which("sandbox-exec"),

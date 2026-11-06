@@ -1,5 +1,13 @@
 # 🛡️ NpmDiffWatch
 
+> **Default workflow changed:** new scans use durable, abuse-focused review, not
+> the legacy rules/text gate described below. Start with
+> [the current workflow guide](docs/abuse-review.md). Findings require evidence
+> and confirmation; notifications are disabled. Missing confirmation or overflow
+> callbacks leave work held/deferred. The public harness does not include those
+> callback implementations. Older operating details below apply to explicit
+> `[reviewer] workflow = "legacy"` unless the current guide says otherwise.
+
 **Catch malicious npm updates before they spread — with a cheap local model and rules anyone can write.**
 
 > 🌐 **A community early-warning system for the npm supply chain.** The more people watching the release

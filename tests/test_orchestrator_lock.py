@@ -10,7 +10,7 @@ import fcntl
 from pathlib import Path
 
 from npmdiffwatch import orchestrator
-from npmdiffwatch.config import Config
+from tests.legacy_config import Config
 
 
 def _cfg(tmp_path) -> Config:

@@ -5,7 +5,7 @@ import time
 from pathlib import Path
 
 from npmdiffwatch import fetcher, ingest, orchestrator, store
-from npmdiffwatch.config import Config
+from tests.legacy_config import Config
 from npmdiffwatch.ingest import ChangesPage
 from npmdiffwatch.watchlist import Watchlist
 

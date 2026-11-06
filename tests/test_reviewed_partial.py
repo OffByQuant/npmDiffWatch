@@ -2,7 +2,7 @@ import dataclasses
 import json
 
 from npmdiffwatch import orchestrator, reviewer, store
-from npmdiffwatch.config import Config
+from tests.legacy_config import Config
 
 
 class _Backend:

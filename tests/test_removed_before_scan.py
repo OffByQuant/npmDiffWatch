@@ -5,7 +5,7 @@ import dataclasses
 from pathlib import Path
 
 from npmdiffwatch import dashboard, fetcher, orchestrator, store
-from npmdiffwatch.config import Config
+from tests.legacy_config import Config
 from npmdiffwatch.models import NewRelease
 
 _UNPUBLISHED = {"_id": "gone-pkg", "name": "gone-pkg",

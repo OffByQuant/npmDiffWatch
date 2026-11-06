@@ -33,6 +33,8 @@ def _rate(usage, secs, input_chars):
 
 def describe(status):
     """One line for `pending` and the dashboard."""
+    if status.get("state") == "durable abuse-review worker":
+        return status["state"] + " · " + status["detail"]
     state = {"closed": "reviews on", "open": "reviews paused (timeout)",
              "degraded": "reviews paused (model degrading)"}.get(status["state"], status["state"])
     speed = f"{status['tok_s']:.0f} tok/s" if status.get("tok_s") else "speed not measured yet"

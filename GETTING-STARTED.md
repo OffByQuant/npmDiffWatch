@@ -1,5 +1,10 @@
 # Getting Started with NpmDiffWatch
 
+> **Current default:** follow [Abuse-focused review](docs/abuse-review.md) for
+> installation, queue operation, sandbox requirements and migration. The older
+> instructions below document the explicit `reviewer.workflow = "legacy"` path;
+> their automatic alerts, text retries and rule routing are not the new default.
+
 A step-by-step guide from install to running NpmDiffWatch continuously under your own harness. For the
 project overview and the no-execution security model, see the [README](README.md); for the detection
 rules, see the YAML files in [`rules/community/`](rules/community).

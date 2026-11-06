@@ -139,11 +139,14 @@ def prune(conn, retention_days: int = 0):
                  "AND COALESCE(human_label,'benign')='benign'))")
     if retention_days > 0:
         cutoff = (datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=retention_days)).isoformat()
+        from .abuse_jobs import exists
+        protected = "".join(f"AND id NOT IN (SELECT release_id FROM {table}) " for table in
+            ("abuse_jobs_v1", "abuse_acquisitions_v1", "abuse_review_projections_v1") if exists(conn, table))
         conn.execute("DELETE FROM releases WHERE processed_at < ? "
                      "AND stage NOT IN ('pending_review','needs_adjudication') "
                      "AND id NOT IN (SELECT release_id FROM verdicts WHERE release_id IS NOT NULL) "
                      "AND id NOT IN (SELECT release_id FROM alerts WHERE release_id IS NOT NULL) "
-                     "AND id NOT IN (SELECT id FROM (SELECT id, ROW_NUMBER() OVER (PARTITION BY package "
+                     + protected + "AND id NOT IN (SELECT id FROM (SELECT id, ROW_NUMBER() OVER (PARTITION BY package "
                      "ORDER BY processed_at DESC, id DESC) AS n FROM releases) WHERE n = 1)", (cutoff,))
     conn.commit()
     conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
@@ -224,7 +227,7 @@ def clear_pending(conn, release_id):
     conn.commit()
 
 def pending_reviews(conn, reasons=None, max_chars=None):
-    sql = ("SELECT id AS release_id, package, version, serial, triage_score, triage_rules, pending_reason, "
+    sql = ("SELECT id AS release_id, package, version, prior_version, is_first_release, serial, triage_score, triage_rules, pending_reason, "
            "COALESCE(priority,0) AS priority, "
            "pending_detail, COALESCE(review_attempts,0) AS review_attempts, review_input "
            "FROM releases WHERE stage='pending_review'")
@@ -387,8 +390,16 @@ def pending_adjudication(conn):
            ORDER BY r.id""").fetchall()
 
 def all_verdicts(conn):
-    return conn.execute(
-        """SELECT r.id AS release_id, r.package, r.version, r.prior_version,
+    from .abuse_jobs import exists, overlay
+    extra = []
+    if exists(conn):
+        extra.append("r.id IN (SELECT release_id FROM abuse_jobs_v1)")
+    if exists(conn, "abuse_review_projections_v1"):
+        extra.append("r.id IN (SELECT release_id FROM abuse_review_projections_v1)")
+    join = "LEFT JOIN" if extra else "JOIN"
+    selected = "WHERE v.release_id IS NOT NULL OR " + " OR ".join(extra) if extra else ""
+    rows = conn.execute(
+        f"""SELECT r.id AS release_id, r.package, r.version, r.prior_version,
                   r.is_first_release, r.triage_score,
                   v.classification, v.confidence, v.attack_type, v.reasoning,
                   v.cited_hunk, v.model, v.urgent, v.created_at, v.human_label, v.human_note,
@@ -396,13 +407,24 @@ def all_verdicts(conn):
                   i.reason AS inv_reason, i.indicators_json AS inv_indicators,
                   (SELECT COUNT(*) FROM investigations x WHERE x.release_id = r.id AND x.status != 'ok')
                     AS inv_failed
-           FROM releases r JOIN verdicts v ON v.release_id = r.id
+           FROM releases r {join} verdicts v ON v.release_id = r.id
            LEFT JOIN investigations i ON i.id = (SELECT MAX(id) FROM investigations y
                                                  WHERE y.release_id = r.id AND y.status = 'ok')
+           {selected}
            ORDER BY CASE COALESCE(v.human_label, v.classification) WHEN 'malicious' THEN 0
-                    WHEN 'suspicious' THEN 1 ELSE 2 END, r.id DESC""").fetchall()
+                     WHEN 'suspicious' THEN 1 ELSE 2 END, r.id DESC""").fetchall()
+    return overlay(conn, rows)
 
 def adjudicate(conn, release_id, label, note):
+    from .abuse_jobs import exists
+    if exists(conn) and conn.execute("SELECT 1 FROM abuse_jobs_v1 WHERE release_id=?", (release_id,)).fetchone():
+        if label not in ("benign", "suspicious", "malicious"):
+            raise ValueError("invalid human adjudication label")
+        conn.execute("INSERT INTO abuse_human_decisions_v1(release_id,label,note,created_at) VALUES(?,?,?,?)",
+                     (release_id, label, note, _now()))
+        conn.execute("UPDATE abuse_outbox_v1 SET state='cancelled' WHERE release_id=? AND state!='sent'", (release_id,))
+        conn.commit()
+        return conn.execute("SELECT package,version,serial,triage_score,triage_rules FROM releases WHERE id=?", (release_id,)).fetchone()
     conn.execute("UPDATE verdicts SET human_label=?, human_note=?, adjudicated_at=? WHERE release_id=?",
                  (label, note, _now(), release_id))
     conn.commit()

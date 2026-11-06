@@ -57,12 +57,19 @@ def _conf_pct(conf) -> str:
 
 def effective_class(row) -> str:
     """Your adjudication, when you've recorded one, overrides the model's call."""
-    return (row.get("human_label") or row.get("classification") or "").lower()
+    if row.get("human_label"):
+        return row["human_label"].lower()
+    if row.get("abuse_result"):
+        return {"no_abuse_found": "benign", "suspicious": "suspicious", "malicious": "malicious"}.get(
+            row["abuse_result"].get("status"), "inconclusive")
+    return (row.get("classification") or "").lower()
 
 
 def unscanned(row) -> bool:
     """A release nobody looked at: stored as a model="none" placeholder so it stays queued for a person. It is
     not a judgement, so it is never shown as flagged unless you have labelled it yourself."""
+    if row.get("abuse_result") and not row.get("human_label"):
+        return not row["abuse_result"].get("candidate")
     return (row.get("model") or "") == "none" and not row.get("human_label")
 
 
@@ -74,7 +81,8 @@ def counts(rows) -> dict:
     """One set of numbers for the header and the status strip."""
     rows = [dict(r) for r in rows]
     return {"releases": len(rows),
-            "model_reviewed": sum(1 for r in rows if (r.get("model") or "") != "none"),
+            "model_reviewed": sum(1 for r in rows if (bool(r["abuse_result"].get("candidate")) if r.get("abuse_result")
+                else (r.get("model") or "") != "none")),
             "flagged": sum(1 for r in rows if _flagged(r)),
             "unscanned": sum(1 for r in rows if unscanned(r))}
 
@@ -234,6 +242,11 @@ def _status_strip(status: dict) -> str:
 
 
 def render_dashboard(rows, status: dict = None, generated_at: str = "") -> str:
+    rows = [dict(row) for row in rows]
+    if any(row.get("abuse_result") for row in rows):
+        from .abuse_dashboard import render
+        return render(rows, generated_at=generated_at,
+            completed=sum(row.get("abuse_result", {}).get("status") not in (None, "queued", "running") for row in rows), total=len(rows))
     # flagged-first, independent of caller ordering (stable within each class).
     rows = sorted((dict(r) for r in rows), key=_rank)
     c = counts(rows)

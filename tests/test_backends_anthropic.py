@@ -14,7 +14,7 @@ import pytest
 anthropic = pytest.importorskip("anthropic")
 httpx = pytest.importorskip("httpx")
 
-from npmdiffwatch.backends import AnthropicBackend, ReviewUnavailable
+from npmdiffwatch.backends import AnthropicBackend, ReviewUnavailable  # noqa: E402 (optional SDK imports above)
 
 SCHEMA = {
     "required": ["classification"],

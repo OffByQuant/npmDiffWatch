@@ -13,7 +13,7 @@ import urllib.error
 from pathlib import Path
 
 from npmdiffwatch import fetcher, ingest, orchestrator, reviewer, store
-from npmdiffwatch.config import Config
+from tests.legacy_config import Config
 from npmdiffwatch.ingest import ChangesPage
 from npmdiffwatch.models import Diff, FileDiff, FiredRule, Hunk, NewRelease, TriageResult
 

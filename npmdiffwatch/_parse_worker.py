@@ -66,7 +66,51 @@ def main() -> None:
         from . import fetcher, sandbox
         try:
             if head.get("extract"):
-                out = sandbox._extract_worker(sandbox._cfg_from_dict(head["cfg"]), stdin.read(head["len"]))
+                cfg = sandbox._cfg_from_dict(head["cfg"])
+                if head.get("full_text") and head.get("exact_bytes"):
+                    from dataclasses import replace
+                    cfg = replace(cfg, max_source_file_bytes=cfg.max_total_bytes,
+                                  max_member_bytes=cfg.max_total_bytes, max_foreign_files=cfg.max_members)
+                blob = stdin.read(head["len"])
+                if head.get("exact_bytes"):
+                    files, bins, _, _ = fetcher.extract_tgz(blob, cfg)
+                    if head.get("full_text"):
+                        for path in list(files):
+                            if not fetcher._is_text(files[path]):
+                                data = files.pop(path)
+                                if not any(item["path"] == path for item in bins):
+                                    bins.append({"path": path, "size": len(data),
+                                        "sha256": hashlib.sha256(data).hexdigest(), "reason": "opaque-binary"})
+                    out = {"files_hex": {p: b.hex() for p, b in files.items()}, "binaries": bins}
+                    if head.get("execution_context"):
+                        from . import content, execclass
+                        classes, loaders = execclass.classify(files)
+                        readers = {path: list(dict.fromkeys(max((f for f in files if line.startswith(f + ":")), key=len, default="")
+                            for line in lines)) for path, lines in loaders.items()}
+                        reads = {}
+                        for target, sources in readers.items():
+                            for source in sources:
+                                reads.setdefault(source, []).append(target)
+                        items = {}
+                        for path, data in files.items():
+                            role, why = classes[path]
+                            base = path.lower().rsplit("/", 1)[-1]
+                            doc_candidate = (path.lower().endswith((".md", ".markdown", ".map", ".d.ts", ".d.mts", ".d.cts"))
+                                or base.split(".")[0] in content.DOC_NAMES)
+                            instruction_asset = base in {"skill.md", "agents.md", "claude.md", "system.md", "prompt.md"}
+                            inert = (role == "inert" and doc_candidate and not instruction_asset and path not in loaders
+                                and content.matches_name(path, data.decode("utf-8", "replace")))
+                            items[path] = {"sha256": hashlib.sha256(data).hexdigest(), "class": role, "why": why,
+                                "verified_inert": inert, "imports": execclass._imports(path, files) if execclass._is_code(path, files) else [],
+                                "readers": readers.get(path, []), "reads": reads.get(path, [])}
+                        package = json.loads(files.get("package.json", b"{}"))
+                        package_identity = {key: package.get(key) if isinstance(package, dict) else None for key in ("name", "version")}
+                        if any(value is not None and (not isinstance(value, str) or len(value) > 4096) for value in package_identity.values()):
+                            raise ValueError("invalid package identity")
+                        out["execution_context"] = {"artifact_sha256": hashlib.sha256(blob).hexdigest(),
+                            "engine": "sandbox-static-inventory-2", "files": items, "package_identity": package_identity}
+                else:
+                    out = sandbox._extract_worker(cfg, blob)
             elif head.get("inflate"):
                 out = {"hex": sandbox._inflate_worker(stdin.read(head["len"]), head["inflate"],
                                                       head["max_length"]).hex()}

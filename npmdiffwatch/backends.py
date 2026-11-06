@@ -37,6 +37,13 @@ class ReviewUnavailable(Exception):
     pass
 
 
+class InvalidModelOutput(ReviewUnavailable):
+    """A completed model answer violates its contract, not a provider failure."""
+    def __init__(self, message, *, raw_response=None):
+        super().__init__(message)
+        self.raw_response = raw_response
+
+
 def _urllib_post_json(url: str, payload: dict, timeout: float, headers: dict | None = None) -> dict:
     egress.assert_web_scheme(url)
     body = json.dumps(payload).encode()
@@ -80,7 +87,7 @@ def validate_verdict(parsed, schema):
     truncation/garbage falls back to the conservative heuristic alert rather than
     silently passing as benign."""
     if not isinstance(parsed, dict):
-        raise ReviewUnavailable(f"verdict is not a JSON object (got {type(parsed).__name__}): the model "
+        raise InvalidModelOutput(f"verdict is not a JSON object (got {type(parsed).__name__}): the model "
                                 f"returned malformed output; lower structured_output or use a stronger model.")
     out = dict(parsed)
     for key, spec in schema.get("properties", {}).items():
@@ -89,7 +96,7 @@ def validate_verdict(parsed, schema):
             if has_default:
                 out[key] = spec["default"]
             elif key in schema.get("required", []):
-                raise ReviewUnavailable(f"verdict missing required key {key!r}: the model returned an "
+                raise InvalidModelOutput(f"verdict missing required key {key!r}: the model returned an "
                                         f"incomplete verdict, often truncated by a reasoning model. Raise "
                                         f"reviewer.max_output_tokens, or disable thinking via "
                                         f"[reviewer.extra_body].")
@@ -98,7 +105,7 @@ def validate_verdict(parsed, schema):
             if has_default:
                 out[key] = spec["default"]
             else:
-                raise ReviewUnavailable(f"verdict {key}={out[key]!r} is not one of {spec['enum']}: the model "
+                raise InvalidModelOutput(f"verdict {key}={out[key]!r} is not one of {spec['enum']}: the model "
                                         f"returned an out-of-contract value. Lower structured_output "
                                         f"(json_schema -> json_object -> none) or use a more capable model.")
     return out
@@ -182,9 +189,13 @@ class OpenAICompatibleBackend:
         try:
             parsed = json.loads(content)
         except json.JSONDecodeError as e:
-            raise ReviewUnavailable(f"non-JSON content: {e}") from e
+            raise InvalidModelOutput(f"non-JSON content: {e}", raw_response=content) from e
         # Return the repaired dict, not raw content, so filled defaults reach the caller.
-        return json.dumps(validate_verdict(parsed, schema))
+        try:
+            return json.dumps(validate_verdict(parsed, schema))
+        except InvalidModelOutput as error:
+            error.raw_response = content
+            raise
 
 
     def user_message(self, text: str) -> dict:
@@ -283,8 +294,12 @@ class AnthropicBackend:
         try:
             parsed = json.loads(text)
         except json.JSONDecodeError as e:
-            raise ReviewUnavailable(f"non-JSON content: {e}") from e
-        return json.dumps(validate_verdict(parsed, schema))
+            raise InvalidModelOutput(f"non-JSON content: {e}", raw_response=text) from e
+        try:
+            return json.dumps(validate_verdict(parsed, schema))
+        except InvalidModelOutput as error:
+            error.raw_response = text
+            raise
 
     def user_message(self, text: str) -> dict:
         return {"role": "user", "content": text}
@@ -343,6 +358,9 @@ def make_backend(cfg, client=None):
                                        extra_body=rc.extra_body)
     if rc.provider == "anthropic":
         return AnthropicBackend(rc.model, rc.escalation_model, client=client)
+    if rc.provider == "opencode":
+        from .opencode_backend import OpencodeBackend
+        return OpencodeBackend(rc.model, rc.escalation_model, timeout=rc.timeout)
     raise ValueError(f"unknown reviewer provider: {rc.provider!r}")
 
 

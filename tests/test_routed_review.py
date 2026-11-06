@@ -2,7 +2,7 @@ import dataclasses
 import json
 
 from npmdiffwatch import orchestrator, reviewer, store
-from npmdiffwatch.config import Config
+from tests.legacy_config import Config
 from npmdiffwatch.models import Diff, FileDiff, Hunk, PkgJsonChange, TriageResult
 
 _PUB = {"provenance_now": True, "provenance_before": True, "trusted_publisher_now": None,

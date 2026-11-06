@@ -6,6 +6,7 @@ import logging
 import os
 import sqlite3
 import time
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 
@@ -21,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 TERMINAL = {"triaged", "alerted", "reviewed", "cleared_by_fact", "new_package_skipped", "needs_adjudication",
             "refused_to_extract", "no_sdist", "refused_to_fetch", "pending_review", "scan_failed",
-            "removed_before_scan", "reviewed_partial"}
+            "removed_before_scan", "reviewed_partial", "abuse_queued", "abuse_acquiring"}
 
 
 def _load_ruleset(cfg):
@@ -29,6 +30,8 @@ def _load_ruleset(cfg):
 
 
 def _build_reviewer(cfg):
+    if cfg.reviewer.workflow == "abuse":
+        return None
     if not cfg.reviewer_enabled:
         logger.info("reviewer disabled; heuristic-only this run")
         return None
@@ -53,14 +56,50 @@ def review_lock_path(cfg):
     return cfg.lock_path.with_name(cfg.lock_path.name + ".review")
 
 
-def _review_slot(cfg):
-    """Blocking lock held while a review is at the model, so `review-pending` and the watch loop (separate
-    processes) never have requests at one endpoint at the same time. Freed when the file is closed."""
+@contextmanager
+def _review_slot(cfg, *, cancel_event=None):
+    """Cross-process aggregate model slots; cancellation never grants extra calls."""
     path = review_lock_path(cfg)
     path.parent.mkdir(parents=True, exist_ok=True)
-    f = open(path, "a+")
-    fcntl.flock(f, fcntl.LOCK_EX)
-    return f
+    with open(path, "a+") as gate:
+        n = cfg.reviewer.concurrency
+        operation = fcntl.LOCK_EX if n == 1 else fcntl.LOCK_SH
+        if cancel_event is None:
+            fcntl.flock(gate, operation)
+        else:
+            while True:
+                if cancel_event.is_set():
+                    raise reviewer.ReviewUnavailable("review cancelled while waiting for a slot")
+                try:
+                    fcntl.flock(gate, operation | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    cancel_event.wait(0.05)
+        if n == 1:
+            yield
+            return
+        while True:
+            if cancel_event is not None and cancel_event.is_set():
+                raise reviewer.ReviewUnavailable("review cancelled while waiting for a slot")
+            slot = None
+            for i in range(n):
+                candidate = open(f"{path}.slot{i}", "a+")
+                try:
+                    fcntl.flock(candidate, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    candidate.close()
+                else:
+                    slot = candidate
+                    break
+            if slot is not None:
+                break
+            time.sleep(0.05)
+        try:
+            if cancel_event is not None and cancel_event.is_set():
+                raise reviewer.ReviewUnavailable("review cancelled before model submission")
+            yield
+        finally:
+            slot.close()
 
 
 def _partial_suspicion(verdict, text) -> bool:
@@ -94,6 +133,8 @@ def _attempt_review(cfg, conn, rvw, rid, package, version, score, fired_rules, t
     """One review attempt; on failure the release is (re)parked with the reason. Returns False when no more
     reviews should be sent now (endpoint unreachable, guard deferring, or the guard's breaker just opened),
     so a drain stops instead of hammering the server."""
+    if cfg.reviewer.workflow == "abuse":
+        raise ValueError("legacy cached-text review is disabled; use the durable abuse worker")
     if guard is not None:
         why = guard.admit()
         if why:
@@ -148,6 +189,8 @@ def _review_routed(cfg, conn, rvw, d, tr, rid, *, offline=False, guard=None, reg
     """Every scanned release is routed: cleared by fact when nothing that can run changed, otherwise a short
     check or the full review. When the model can't take it now it waits, with no stored input, as
     "not reviewed yet"; nothing is cleared to catch up. Returns False when no more reviews should be sent now."""
+    if cfg.reviewer.workflow == "abuse":
+        raise ValueError("abuse review requires an unopened pinned pair, not a legacy diff-only route")
     r = routing.route(d, registry_changes)
     store.set_priority(conn, rid, r.priority)
     if r.tier == "fact":
@@ -184,6 +227,13 @@ def _review_routed(cfg, conn, rvw, d, tr, rid, *, offline=False, guard=None, reg
 
 def evaluate_release(cfg, dl, ruleset, rvw, backend) -> dict:
     """The route and review one release gets, without the database (the evaluation harness uses this)."""
+    if cfg.reviewer.workflow == "abuse":
+        from . import abuse_runtime
+        ident = abuse_runtime.identity(cfg, dl)
+        job = {"identity": ident, "new_blob": dl.new_blob, "prior_blob": dl.prior_blob}
+        context = abuse_runtime.prepare(cfg, job, lambda: _review_slot(cfg), backend=rvw.backend if rvw else None)
+        result = abuse_runtime.evaluate(context, abuse_runtime.extension_factory(cfg.reviewer.extension))
+        return {"tier": "abuse", **result}
     ctx = {"current": dl.maintainer_metadata, "prior": None}
     _, d, tr = sandbox.analyze(cfg, dl, ctx, backend, ruleset)
     reg = sandbox._manifest_diff(dl).package_json_changes if dl.manifest is not None else ()
@@ -238,6 +288,8 @@ def drain_pending(cfg, conn, rvw, *, auto: bool, reasons=None, limit=None, guard
     reviews with attempts left, and too_large rows that now fit. Manual (`review-pending`): by default oversized
     releases and exhausted retries — run it with a larger-context model config. Inputs over this endpoint's cap are skipped
     (auto: re-parked as too_large). `limit` caps attempts, not successes. Returns the number reviewed."""
+    if cfg.reviewer.workflow == "abuse":
+        raise ValueError("legacy pending-text adapter is disabled; use review-pending/review-worker")
     if auto:
         reasons = ("model_busy", "endpoint_unreachable", "review_failed", "reviewer_disabled", "not_reviewed_yet")
     elif not reasons:
@@ -326,7 +378,7 @@ def _scan_failed(cfg, conn, rid, rel, err) -> bool:
 def _fetch_one(cfg, rel, meta=None):
     """Sandboxed runs only download here; the tarballs are opened later, in the sandbox."""
     try:
-        if sandbox._backend != "off":
+        if cfg.reviewer.workflow == "abuse" or sandbox._backend != "off":
             return fetcher.download(cfg, rel, meta)
         return fetcher.fetch_artifacts(cfg, rel, meta)
     except Exception as e:
@@ -382,6 +434,9 @@ def _alert_unscanned(cfg, conn, rid, rel, note):
 
 
 def _process_fetched(cfg, conn, rvw, ruleset, rel, result, offline=False, guard=None) -> bool:
+    if cfg.reviewer.workflow == "abuse":
+        from .abuse_coordinator import accept_fetch
+        return accept_fetch(cfg, conn, rel, result)
     rid = store.record_release(conn, rel.package, rel.version, rel.serial, False, None, "tgz")
     if isinstance(result, fetcher.RefusedToFetch):
         store.update_stage(conn, rid, "refused_to_fetch")
@@ -499,7 +554,7 @@ def run_once(cfg: Config, *, seed_if_fresh: bool = True, recent: int | None = No
                   flush=True)
 
         rvw = _build_reviewer(cfg)
-        ruleset = _load_ruleset(cfg)
+        ruleset = _load_ruleset(cfg) if cfg.reviewer.workflow == "legacy" else None
         sandbox._backend = sandbox.choose(cfg)
         offline = False
         guard = None
@@ -523,8 +578,8 @@ def run_once(cfg: Config, *, seed_if_fresh: bool = True, recent: int | None = No
         releases = page.releases
         # Releases that failed on an earlier scan are retried first, from the database; one seen again in the
         # feed waits for its retry, so it is tried once per scan.
-        prepared = [(NewRelease(r["package"], r["version"], r["serial"]), "fetch_failed")
-                    for r in store.scan_retries_due(conn)]
+        prepared = ([(NewRelease(r["package"], r["version"], r["serial"]), "fetch_failed")
+                    for r in store.scan_retries_due(conn)] if cfg.reviewer.workflow == "legacy" else [])
         prepared += [(rel, stg) for rel in releases
                      if (stg := store.get_stage(conn, rel.package, rel.version)) != "fetch_failed"]
 
@@ -541,7 +596,8 @@ def run_once(cfg: Config, *, seed_if_fresh: bool = True, recent: int | None = No
         # A release that failed waits in the retry list, not on the cursor, so the scan always moves on.
         store.set_last_serial(conn, max(last, page.watermark))
         try:
-            store.maybe_prune(conn, cfg.retention_days, cfg.prune_every_hours * 3600, time.time())
+            if cfg.reviewer.workflow == "legacy":
+                store.maybe_prune(conn, cfg.retention_days, cfg.prune_every_hours * 3600, time.time())
         except sqlite3.Error:
             logger.exception("automatic prune failed; scanning continues")
         return len(releases)
@@ -557,6 +613,12 @@ def queued_releases(cfg: Config) -> list[dict]:
     """Releases waiting for an LLM review, oldest first."""
     conn = store.connect(cfg); store.init_schema(conn)
     try:
+        if cfg.reviewer.workflow == "abuse":
+            from .abuse_jobs import exists
+            if not exists(conn):
+                return []
+            return [dict(row) for row in conn.execute("SELECT r.package,r.version,r.triage_score,j.state AS pending_reason "
+                "FROM abuse_jobs_v1 j JOIN releases r ON r.id=j.release_id WHERE j.state IN ('queued','running') ORDER BY j.created_at")]
         return [{k: r[k] for k in ("package", "version", "triage_score", "pending_reason")}
                 for r in store.pending_reviews(conn)]
     finally:
@@ -566,6 +628,15 @@ def queued_releases(cfg: Config) -> list[dict]:
 def review_pending(cfg: Config, reasons=None, limit=None):
     """Drain the LLM-review queue with this config's reviewer (e.g. a larger-context model for
     too_large). Takes no scan lock: the watch loop's auto-drain covers different reasons by default."""
+    if cfg.reviewer.workflow == "abuse":
+        from . import abuse_coordinator
+        conn = store.connect(cfg); store.init_schema(conn)
+        try:
+            abuse_coordinator.enqueue_legacy_pending(cfg, conn, reasons, limit)
+        finally:
+            conn.close()
+        n = abuse_coordinator.drain(cfg, limit=limit)
+        return n, abuse_coordinator.pending_counts(cfg)
     conn = store.connect(cfg); store.init_schema(conn)
     try:
         rvw = _build_reviewer(cfg)
@@ -603,6 +674,9 @@ def feed_retry_counts(cfg: Config) -> dict:
 
 
 def pending_review_counts(cfg: Config) -> dict:
+    if cfg.reviewer.workflow == "abuse":
+        from .abuse_coordinator import pending_counts
+        return pending_counts(cfg)
     conn = store.connect(cfg); store.init_schema(conn)
     try:
         return store.pending_review_counts(conn)
@@ -612,6 +686,23 @@ def pending_review_counts(cfg: Config) -> dict:
 
 def list_pending(cfg: Config):
     conn = store.connect(cfg); store.init_schema(conn)
+    if cfg.reviewer.workflow == "abuse":
+        try:
+            items = []
+            for row in store.all_verdicts(conn):
+                result = row.get("abuse_result", {})
+                current = row.get("human_label") or result.get("status")
+                if current not in ("malicious", "suspicious", "held"):
+                    continue
+                candidate = result.get("candidate", {})
+                evidence = "\n".join(bytes.fromhex(q["quote_hex"]).decode("utf-8") for q in candidate.get("citations", []))
+                items.append({"release_id": row["release_id"], "package": row["package"], "version": row["version"],
+                    "classification": current, "confidence": None, "attack_type": "none", "cited_hunk": "",
+                    "reasoning": row.get("human_note") or result.get("adjudication", {}).get("reason") or candidate.get("reasoning", ""),
+                    "diff_text": evidence, "fetch_error": None, "evidence_stored": True})
+            return items
+        finally:
+            conn.close()
     ruleset = _load_ruleset(cfg)
     backend = None          # chosen only if a release has to be downloaded again
     items = []
@@ -751,7 +842,17 @@ def _baseline_incomplete(cfg, wl) -> bool:
 
 
 def watch(cfg: Config, interval: int = 300, out_path=None, iterations=None, sleep_fn=None, recent=None,
-          watchlist=None):
+           watchlist=None):
+    if cfg.reviewer.workflow == "abuse":
+        from .abuse_coordinator import worker
+        manager = worker(cfg)
+    else:
+        manager = nullcontext()
+    with manager:
+        return _watch_ticks(cfg, interval, out_path, iterations, sleep_fn, recent, watchlist)
+
+
+def _watch_ticks(cfg, interval, out_path, iterations, sleep_fn, recent, watchlist):
     """Daemon loop: scan one tick, refresh the dashboard, sleep, repeat until Ctrl-C. While a backlog is
     waiting (a --recent start, or a restart after downtime) the next tick starts at once instead.
     A failed scan is logged and skipped (the daemon stays up); the dashboard is
@@ -816,6 +917,8 @@ def guard_status(cfg: Config):
     sends nothing to the endpoint. None when the reviewer is disabled."""
     if not cfg.reviewer_enabled:
         return None
+    if cfg.reviewer.workflow == "abuse":
+        return {"state": "durable abuse-review worker", "detail": "notifications disabled; unopened inputs retained"}
     conn = store.connect(cfg); store.init_schema(conn)
     try:
         return guard_mod.ReviewerGuard(cfg, None, conn).status()
@@ -900,7 +1003,7 @@ def adjudicate(cfg: Config, release_id: int, label: str, note: str = ""):
         if rel is None:
             return None
         alerted = False
-        if label != "benign":
+        if label != "benign" and cfg.reviewer.workflow == "legacy":
             v = Verdict(rel["package"], rel["version"], label, rel["triage_score"] or 0.0,
                         _rules_from_json(rel["triage_rules"]), label == "malicious",
                         reasoning=note or None, model="human-adjudicator")
